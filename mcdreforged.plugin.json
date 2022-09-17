@@ -1,0 +1,18 @@
+{
+  "id": "kpi",
+  "version": "1.0.0",
+  "name": "KPI",
+  "description": {
+    "en_us": "A MCDR plugins codes share library",
+    "zh_cn": "一个MCDR插件代码共享库"
+  },
+  "author": "zyxkad",
+  "link": "https://github.com/kmcsr/forestapi_mcdr",
+  "dependencies": {
+    "mcdreforged": ">=2.0.0"
+  },
+  "resources": [
+    "LICENSE",
+    "lang"
+  ]
+}
