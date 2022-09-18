@@ -7,7 +7,7 @@
     "zh_cn": "一个MCDR插件代码共享库"
   },
   "author": "zyxkad",
-  "link": "https://github.com/kmcsr/forestapi_mcdr",
+  "link": "https://github.com/kmcsr/kpi_mcdr",
   "dependencies": {
     "mcdreforged": ">=2.0.0"
   },

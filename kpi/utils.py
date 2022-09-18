@@ -3,11 +3,13 @@ import threading
 import functools
 
 import mcdreforged.api.all as MCDR
+from mcdreforged.utils.logger import DebugOption
 
 __all__ = [
 	'export_pkg',
 	'LockedData', 'JobManager',
-	'new_timer', 'new_command', 'join_rtext', 'send_message', 'broadcast_message', 'log_info'
+	'new_timer', 'new_command', 'join_rtext', 'send_message', 'broadcast_message',
+	'debug', 'log_info', 'log_warn', 'log_error'
 ]
 
 def export_pkg(globals_, pkg):
@@ -16,18 +18,45 @@ def export_pkg(globals_, pkg):
 		for n in pkg.__all__:
 			globals_[n] = getattr(pkg, n)
 
+def _data_proxy(method: str, expr: bool = False):
+	if expr:
+		def wrapper(self, *args):
+			with self.l:
+				v = getattr(self.d, method)(*args)
+				return LockedData(v, lock=self.l)
+	else:
+		def wrapper(self, *args):
+			with self.l:
+				return getattr(self.d, method)(*args)
+	return wrapper
+
+def _data_proxy_wrapper(exprs: list, methods: list):
+	def w(cls: type) -> type:
+		for m in exprs:
+			setattr(cls, m, _data_proxy(m, True))
+		for m in methods:
+			# assert not hasattr(cls, m), f'Method "{m}" already exists'
+			setattr(cls, m, _data_proxy(m))
+		return cls
+	return w
+
+@_data_proxy_wrapper([
+	'__pos__', '__neg__', '__add__', '__sub__', '__lshift__', '__rshift__', '__xor__',
+	'__mul__', '__mod__', '__divmod__', '__floordiv__', '__truediv__', '__pow__',
+],
+[
+	'__radd__', '__rsub__', '__rlshift__', '__rrshift__', '__rxor__',
+	'__rmul__', '__rdivmod__', '__rfloordiv__', '__rtruediv__', '__rmod__', '__rpow__',
+	'__eq__', '__gt__', '__lt__', '__ge__', '__le__', '__ne__',
+	'__abs__', '__ceil__', '__floor__', '__round__', '__invert__', '__trunc__',
+	'__str__', '__int__', '__float__', '__bool__',
+	'__delitem__', '__getitem__', '__setitem__',
+	'__len__', '__iter__',
+])
 class LockedData:
 	def __init__(self, data, lock=None):
 		self._data = data
-		self._lock = threading.Lock() if lock is None else lock
-
-	@property
-	def d(self):
-		return self._data
-
-	@d.setter
-	def d(self, data):
-		self._data = data
+		self._lock = threading.RLock() if lock is None else lock
 
 	@property
 	def l(self):
@@ -39,6 +68,15 @@ class LockedData:
 
 	def __exit__(self, *args, **kwargs):
 		return self._lock.__exit__(*args, **kwargs)
+
+	@property
+	def d(self):
+		return self._data
+
+	@d.setter
+	def d(self, data):
+		assert data is not self
+		self._data = data
 
 class JobManager: pass
 
@@ -59,12 +97,15 @@ class Job:
 				if len(args) > 0 and isinstance(args[0], MCDR.CommandSource):
 					send_message(args[0], MCDR.RText('In progress {} now'.format(self._manager._l.d[0]), color=MCDR.RColor.red))
 				else:
-					log_info(MCDR.RText('In progress {0} now, cannot do {1}'.format(self._manager._l.d[0], self.name), color=MCDR.RColor.red))
+					log_warn('In progress {0} now, cannot do {1}'.format(self._manager._l.d[0], self.name))
 				return None
+			debug(f'Pending job "{self.name}"')
 			self._manager.begin(self.name, block=True)
 		try:
+			debug(f'Calling job "{self.name}"')
 			return self.call_unsafe(*args, **kwargs)
 		finally:
+			debug(f'Finish job "{self.name}"')
 			self._manager.after()
 
 	def call_unsafe(self, *args, **kwargs):
@@ -91,6 +132,7 @@ class JobManager:
 	def begin(self, job: str, block: bool = False):
 		with self._l:
 			while True:
+				debug('self._l.d:', self._l.d)
 				if self._l.d is None or self._l.d is False:
 					self._l.d = [job, 1]
 					return True
@@ -159,5 +201,14 @@ def send_message(source: MCDR.CommandSource, *args, sep=' ', log=False):
 def broadcast_message(*args, sep=' '):
 	MCDR.ServerInterface.get_instance().broadcast(join_rtext(*args, sep=sep))
 
+def debug(*args, sep=' '):
+	MCDR.ServerInterface.get_instance().logger.debug(join_rtext(*args, sep=sep), option=DebugOption.PLUGIN)
+
 def log_info(*args, sep=' '):
 	MCDR.ServerInterface.get_instance().logger.info(join_rtext(*args, sep=sep))
+
+def log_warn(*args, sep=' '):
+	MCDR.ServerInterface.get_instance().logger.warn(join_rtext(*args, sep=sep))
+
+def log_error(*args, sep=' '):
+	MCDR.ServerInterface.get_instance().logger.error(join_rtext(*args, sep=sep))

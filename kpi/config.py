@@ -64,8 +64,11 @@ class Properties:
 		self._data.clear()
 		with open(self._file, 'r') as fd:
 			while True:
-				l = fd.readline().lstrip()
-				if not l or l[0] in '#!':
+				line = fd.readline()
+				if not line:
+					break
+				line = line.lstrip()
+				if not line or line[0] in '#!':
 					continue
 				a, b = line.find('='), line.find(':')
 				i = (max if a == -1 or b == -1 else min)(a, b)
