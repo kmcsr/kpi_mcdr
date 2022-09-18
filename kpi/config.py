@@ -12,9 +12,10 @@ def tr(key: str, *args, **kwargs):
 	return MCDR.ServerInterface.get_instance().rtr(f'kpi.{key}', *args, **kwargs)
 
 class Config(MCDR.Serializable):
-	def __init_subclass__(cls, msg_id, **kwargs):
+	def __init_subclass__(cls, msg_id, def_level: int = 4, **kwargs):
 		super().__init_subclass__(**kwargs)
 		cls.msg_id = msg_id
+		cls.def_level = def_level
 		cls._instance = None
 
 	# 0:guest 1:user 2:helper 3:admin 4:owner
@@ -29,9 +30,10 @@ class Config(MCDR.Serializable):
 		return self._server
 
 	def literal(self, literal: str):
-		lvl = self.minimum_permission_level.get(literal, 4)
+		cls = self.__class__
+		lvl = self.minimum_permission_level.get(literal, cls.def_level)
 		return MCDR.Literal(literal).requires(lambda src: src.has_permission(lvl),
-			lambda: MCDR.RText(tr('permission.denied', self.__class__.msg_id.to_plain_text()), color=MCDR.RColor.red))
+			lambda: MCDR.RText(tr('permission.denied', cls.msg_id.to_plain_text()), color=MCDR.RColor.red))
 
 	def save(self, source: MCDR.CommandSource):
 		self._server.save_config_simple(self)

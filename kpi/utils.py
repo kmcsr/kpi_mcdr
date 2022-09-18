@@ -78,6 +78,10 @@ class LockedData:
 		assert data is not self
 		self._data = data
 
+	def copy(self):
+		with self._lock:
+			return self._data.copy()
+
 class JobManager: pass
 
 class Job:
@@ -175,14 +179,18 @@ def new_timer(interval, call, args: list=None, kwargs: dict=None, daemon: bool=T
 	tm.start()
 	return tm
 
-def new_command(cmd: str, text=None, **kwargs):
+def new_command(cmd: str, text=None, *, action: MCDR.RAction = MCDR.RAction.suggest_command, **kwargs):
 	if text is None:
 		text = cmd
 	if 'color' not in kwargs:
 		kwargs['color'] = MCDR.RColor.yellow
+	elif kwargs['color'] is None:
+		kwargs.pop('color')
 	if 'styles' not in kwargs:
 		kwargs['styles'] = MCDR.RStyle.underlined
-	return MCDR.RText(text, **kwargs).c(MCDR.RAction.run_command, cmd).h(cmd)
+	elif kwargs['styles'] is None:
+		kwargs.pop('styles')
+	return MCDR.RText(text, **kwargs).c(action, cmd).h(cmd)
 
 def join_rtext(*args, sep=' '):
 	if len(args) == 0:
