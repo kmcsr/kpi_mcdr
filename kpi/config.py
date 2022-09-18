@@ -12,6 +12,11 @@ def tr(key: str, *args, **kwargs):
 	return MCDR.ServerInterface.get_instance().rtr(f'kpi.{key}', *args, **kwargs)
 
 class Config(MCDR.Serializable):
+	def __init_subclass__(cls, msg_id, **kwargs):
+		super().__init_subclass__(**kwargs)
+		cls.msg_id = msg_id
+		cls._instance = None
+
 	# 0:guest 1:user 2:helper 3:admin 4:owner
 	minimum_permission_level: Dict[str, int] = {}
 
@@ -26,7 +31,7 @@ class Config(MCDR.Serializable):
 	def literal(self, literal: str):
 		lvl = self.minimum_permission_level.get(literal, 4)
 		return MCDR.Literal(literal).requires(lambda src: src.has_permission(lvl),
-			lambda: MCDR.RText(tr('permission.denied', MSG_ID.to_plain_text()), color=MCDR.RColor.red))
+			lambda: MCDR.RText(tr('permission.denied', self.__class__.msg_id.to_plain_text()), color=MCDR.RColor.red))
 
 	def save(self, source: MCDR.CommandSource):
 		self._server.save_config_simple(self)
@@ -42,16 +47,16 @@ class Config(MCDR.Serializable):
 		if server is None:
 			assert isinstance(oldConfig, cls)
 			server = oldConfig._server
-		cls._INSTANCE = server.load_config_simple(target_class=cls, echo_in_console=isinstance(source, MCDR.PlayerCommandSource), source_to_reply=source)
-		cls._INSTANCE._server = server
-		cls._INSTANCE.after_load(source, oldConfig)
+		cls._instance = server.load_config_simple(target_class=cls, echo_in_console=isinstance(source, MCDR.PlayerCommandSource), source_to_reply=source)
+		cls._instance._server = server
+		cls._instance.after_load(source, oldConfig)
 
 	def after_load(self, source: MCDR.CommandSource, oldConfig):
 		pass
 
 	@classmethod
 	def instance(cls):
-		return cls._INSTANCE if hasattr(cls, '_INSTANCE') else None
+		return cls._instance
 
 class Properties:
 	def __init__(self, file: str):
