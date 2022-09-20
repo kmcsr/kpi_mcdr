@@ -29,10 +29,12 @@ class Config(MCDR.Serializable):
 	def server(self):
 		return self._server
 
+	def has_permission(self, src: MCDR.CommandSource, literal: str):
+		return src.has_permission(self.minimum_permission_level.get(literal, self.__class__.def_level))
+
 	def literal(self, literal: str):
 		cls = self.__class__
-		lvl = self.minimum_permission_level.get(literal, cls.def_level)
-		return MCDR.Literal(literal).requires(lambda src: src.has_permission(lvl),
+		return MCDR.Literal(literal).requires(lambda src: self.has_permission(src, literal),
 			lambda: MCDR.RText(tr('permission.denied', cls.msg_id.to_plain_text()), color=MCDR.RColor.red))
 
 	def save(self, source: MCDR.CommandSource):
