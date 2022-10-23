@@ -200,7 +200,7 @@ def _unescape_chr(src: str, i: int) -> tuple[str, int]:
 		return _decode_hex(src, i + 1, 2)
 	if t == 'u':
 		return _decode_hex(src, i + 1, 4)
-	return '\\', i
+	return src[i], i + 1
 
 def _decode_hex(src: str, i: int, xlen: int) -> tuple[str, int]:
 	j = i + xlen

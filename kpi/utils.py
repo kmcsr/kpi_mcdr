@@ -7,7 +7,7 @@ from mcdreforged.utils.logger import DebugOption
 
 __all__ = [
 	'export_pkg',
-	'LockedData', 'JobManager',
+	'LockedData', 'LazyData', 'JobManager',
 	'new_timer', 'new_command', 'join_rtext', 'send_message', 'broadcast_message',
 	'debug', 'log_info', 'log_warn', 'log_error'
 ]
@@ -18,7 +18,7 @@ def export_pkg(globals_, pkg):
 		for n in pkg.__all__:
 			globals_[n] = getattr(pkg, n)
 
-def _data_proxy(method: str, expr: bool = False):
+def __lockeddata_proxy(method: str, expr: bool = False):
 	if expr:
 		def wrapper(self, *args):
 			with self.l:
@@ -30,17 +30,17 @@ def _data_proxy(method: str, expr: bool = False):
 				return getattr(self.d, method)(*args)
 	return wrapper
 
-def _data_proxy_wrapper(exprs: list, methods: list):
+def __lockeddata_proxy_wrapper(exprs: list, methods: list):
 	def w(cls: type) -> type:
 		for m in exprs:
-			setattr(cls, m, _data_proxy(m, True))
+			setattr(cls, m, __lockeddata_proxy(m, True))
 		for m in methods:
 			# assert not hasattr(cls, m), f'Method "{m}" already exists'
-			setattr(cls, m, _data_proxy(m))
+			setattr(cls, m, __lockeddata_proxy(m))
 		return cls
 	return w
 
-@_data_proxy_wrapper([
+@__lockeddata_proxy_wrapper([
 	'__pos__', '__neg__', '__add__', '__sub__', '__lshift__', '__rshift__', '__xor__',
 	'__mul__', '__mod__', '__divmod__', '__floordiv__', '__truediv__', '__pow__',
 ],
@@ -81,6 +81,69 @@ class LockedData:
 	def copy(self):
 		with self._lock:
 			return self._data.copy()
+
+def __lazydata_proxy(method: str):
+	def wrapper(self, *args):
+		return getattr(object.__getattribute__(self, '_LazyData__data'), method)(*args)
+	return wrapper
+
+def __lazydata_proxy_wrapper(methods: list):
+	def w(cls: type) -> type:
+		for m in methods:
+			setattr(cls, m, __lazydata_proxy(m))
+		return cls
+	return w
+
+@__lazydata_proxy_wrapper([
+	'__pos__', '__neg__', '__add__', '__sub__', '__lshift__', '__rshift__', '__xor__',
+	'__mul__', '__mod__', '__divmod__', '__floordiv__', '__truediv__', '__pow__',
+	'__radd__', '__rsub__', '__rlshift__', '__rrshift__', '__rxor__',
+	'__rmul__', '__rdivmod__', '__rfloordiv__', '__rtruediv__', '__rmod__', '__rpow__',
+	'__eq__', '__gt__', '__lt__', '__ge__', '__le__', '__ne__',
+	'__abs__', '__ceil__', '__floor__', '__round__', '__invert__', '__trunc__',
+	'__str__', '__int__', '__float__', '__bool__',
+	'__delitem__', '__getitem__', '__setitem__',
+	'__len__', '__iter__',
+])
+class LazyData:
+	__None = object()
+
+	def __init__(self, generater):
+		self.__generater = generater
+		self.__data = LazyData.__None
+
+	@staticmethod
+	def load(self, *args, **kwargs):
+		data = self.__generater(*args, **kwargs)
+		self.__data = data
+
+	@staticmethod
+	def isloaded(self):
+		return self.__issetted
+
+	@property
+	def __issetted(self) -> bool:
+		return self.__data is not LazyData.__None
+
+	def __repr__(self):
+		return '<LazeData {}>'.format(repr(self.__data) if self.__issetted else 'Unsetted')
+
+	def __getattribute__(self, key: str):
+		if key.startswith('_LazyData__'):
+			return super().__getattribute__(key)
+		assert self.__issetted, 'Data was not initialized yet'
+		print('getted:', key, getattr(self.__data, key))
+		return getattr(self.__data, key)
+
+	def __setattr__(self, key: str, val):
+		if key.startswith('_LazyData__'):
+			return super().__setattr__(key, val)
+		assert self.__issetted, 'Data was not initialized yet'
+		return setattr(self.__data, key, val)
+
+	def __delattr__(self, key: str):
+		assert self.__issetted, 'Data was not initialized yet'
+		return delattr(self.__data, key)
 
 class JobManager: pass
 
@@ -136,7 +199,6 @@ class JobManager:
 	def begin(self, job: str, block: bool = False):
 		with self._l:
 			while True:
-				debug('self._l.d:', self._l.d)
 				if self._l.d is None or self._l.d is False:
 					self._l.d = [job, 1]
 					return True
@@ -172,7 +234,7 @@ class JobManager:
 			return Job(self, call, block, name)
 		return w
 
-def new_timer(interval, call, args: list=None, kwargs: dict=None, daemon: bool=True, name: str='kpi_timer'):
+def new_timer(interval, call, args: list = None, kwargs: dict = None, daemon: bool = True, name: str = 'kpi_timer'):
 	tm = threading.Timer(interval, call, args=args, kwargs=kwargs)
 	tm.name = name
 	tm.daemon = daemon
