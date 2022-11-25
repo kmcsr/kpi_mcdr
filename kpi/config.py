@@ -1,6 +1,9 @@
 
+import abc
+import copy
 import os
-from typing import Dict
+import json
+from typing import get_type_hints, Dict
 
 import mcdreforged.api.all as MCDR
 
@@ -11,56 +14,138 @@ __all__ = [
 def tr(key: str, *args, **kwargs):
 	return MCDR.ServerInterface.get_instance().rtr(f'kpi.{key}', *args, **kwargs)
 
-class Config(MCDR.Serializable):
+class JSONStorage(abc.ABC):
+	__fields: dict
+
+	def __init__(self, plugin: MCDR.PluginServerInterface,
+		file_name: str = 'config.json', *, in_data_folder: bool = True,
+		sync_update: bool = False, load_after_init: bool = False,
+		kwargs: dict = None):
+		assert isinstance(plugin, MCDR.PluginServerInterface)
+		self.__plugin_server = plugin
+		self._file_name = file_name
+		self._in_data_folder = in_data_folder
+		self._sync_update = sync_update
+		if kwargs is not None:
+			for k in kwargs.keys():
+				if k not in self.get_fields():
+					raise KeyError('Unknown init key received in __init__ of class {0}: {1}'.format(self.__class__, k))
+			vars(self).update(kwargs)
+		if load_after_init:
+			self.load()
+
+	def __init_subclass__(cls):
+		fields = {}
+		for name, typ in get_type_hints(cls).items():
+			if not name.startswith('_'):
+				fields[name] = typ
+		cls.__fields = fields
+
+	@classmethod
+	def get_fields(cls):
+		return cls.__fields
+
+	@property
+	def plugin(self):
+		return self.__plugin_server
+
+	@property
+	def file_name(self):
+		return self._file_name
+
+	@file_name.setter
+	def file_name(self, file_name):
+		self._file_name = file_name
+
+	@property
+	def default_path(self):
+		return os.path.join(self.plugin.get_data_folder(), self.file_name) if self._in_data_folder else self.file_name
+
+	@property
+	def sync_update(self):
+		return self._sync_update
+
+	@sync_update.setter
+	def sync_update(self, val: bool):
+		self._sync_update = val
+
+	def serialize(self) -> dict:
+		return copy.deepcopy(vars(self))
+
+	def update(self, data: dict):
+		vself = vars(self)
+		for k, v in data.items():
+			if k in vself:
+				vself[k] = v
+
+	def save(self, *, path: str = None):
+		if path is None:
+			path = self.default_path
+		with open(path, 'w') as fd:
+			json.dump(self.serialize(), fd)
+		self.on_saved()
+
+	def load(self, *, path: str = None, error_on_missing: bool = False):
+		if path is None:
+			path = self.default_path
+		if not os.path.exists(path):
+			if error_on_missing:
+				raise FileNotFoundError(f'Cannot find storage file: "{path}"')
+			self.save(path=path)
+			return
+		data: dict
+		try:
+			with open(path, 'r') as fd:
+				data = json.load(fd)
+		except json.decoder.JSONDecodeError as e:
+			self.save(path=path)
+		else:
+			self.update(data)
+
+	def on_saved(self):
+		pass
+
+	def on_loaded(self):
+		pass
+
+	def __setattr__(self, name: str, val):
+		typ = self.__class__.__fields.get(name, None)
+		if typ is not None:
+			assert isinstance(val, typ)
+		super().__setattr__(name, val)
+		if typ is not None and self._sync_update:
+			self.save()
+
+class Config(JSONStorage):
 	def __init_subclass__(cls, msg_id, def_level: int = 4, **kwargs):
 		super().__init_subclass__(**kwargs)
 		cls.msg_id = msg_id
 		cls.def_level = def_level
-		cls._instance = None
+		cls.instance = None
+
+	@classmethod
+	def init_instance(cls, plugin: MCDR.PluginServerInterface, *args, sync_update: bool = True, **kwargs):
+		assert cls.instance is None
+		cls.instance = cls(plugin, *args, sync_update=sync_update, **kwargs)
+		return cls.instance
 
 	# 0:guest 1:user 2:helper 3:admin 4:owner
 	minimum_permission_level: Dict[str, int] = {}
 
-	def __init__(self, *args, **kwargs):
-		super().__init__(*args, **kwargs)
-		self._server = None
-
 	@property
-	def server(self):
-		return self._server
+	def server(self) -> MCDR.PluginServerInterface:
+		return self.plugin
+
+	def get_permission(self, literal: str):
+		return self.minimum_permission_level.get(literal, self.__class__.def_level)
 
 	def has_permission(self, src: MCDR.CommandSource, literal: str):
-		return src.has_permission(self.minimum_permission_level.get(literal, self.__class__.def_level))
+		return src.has_permission(self.get_permission(literal))
 
 	def literal(self, literal: str):
 		cls = self.__class__
 		return MCDR.Literal(literal).requires(lambda src: self.has_permission(src, literal),
 			lambda: MCDR.RText(tr('permission.denied', cls.msg_id.to_plain_text()), color=MCDR.RColor.red))
-
-	def save(self, source: MCDR.CommandSource):
-		self._server.save_config_simple(self)
-		self.on_saved(source)
-		source.reply('Config file saved SUCCESS')
-
-	def on_saved(self, source: MCDR.CommandSource):
-		pass
-
-	@classmethod
-	def load(cls, source: MCDR.CommandSource, server: MCDR.PluginServerInterface = None):
-		oldConfig = cls.instance()
-		if server is None:
-			assert isinstance(oldConfig, cls)
-			server = oldConfig._server
-		cls._instance = server.load_config_simple(target_class=cls, echo_in_console=isinstance(source, MCDR.PlayerCommandSource), source_to_reply=source)
-		cls._instance._server = server
-		cls._instance.after_load(source, oldConfig)
-
-	def after_load(self, source: MCDR.CommandSource, oldConfig):
-		pass
-
-	@classmethod
-	def instance(cls):
-		return cls._instance
 
 class Properties:
 	def __init__(self, file: str):

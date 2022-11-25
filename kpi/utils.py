@@ -207,7 +207,7 @@ class JobManager:
 				self._l.l.wait()
 		return False
 
-	def ping(self):
+	def prepare(self):
 		with self._l:
 			assert isinstance(self._l.d, list)
 			self._l.d[1] += 1

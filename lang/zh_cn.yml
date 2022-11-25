@@ -1,0 +1,3 @@
+kpi:
+  permission:
+    denied: '{0} 没有足够权限'
