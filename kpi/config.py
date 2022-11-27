@@ -7,8 +7,10 @@ from typing import get_type_hints, Dict
 
 import mcdreforged.api.all as MCDR
 
+from .utils import *
+
 __all__ = [
-	'Config'
+	'Config', 'JSONStorage',
 ]
 
 def tr(key: str, *args, **kwargs):
@@ -26,6 +28,7 @@ class JSONStorage(abc.ABC):
 		self._file_name = file_name
 		self._in_data_folder = in_data_folder
 		self._sync_update = sync_update
+		vars(self).update((k, getattr(self.__class__, k)) for k in self.get_fields().keys())
 		if kwargs is not None:
 			for k in kwargs.keys():
 				if k not in self.get_fields():
@@ -70,7 +73,7 @@ class JSONStorage(abc.ABC):
 		self._sync_update = val
 
 	def serialize(self) -> dict:
-		return copy.deepcopy(vars(self))
+		return copy.deepcopy(dict(filter(lambda o: not o[0].startswith('_'), vars(self).items())))
 
 	def update(self, data: dict):
 		vself = vars(self)
@@ -82,7 +85,7 @@ class JSONStorage(abc.ABC):
 		if path is None:
 			path = self.default_path
 		with open(path, 'w') as fd:
-			json.dump(self.serialize(), fd)
+			json.dump(self.serialize(), fd, indent=4, ensure_ascii=False)
 		self.on_saved()
 
 	def load(self, *, path: str = None, error_on_missing: bool = False):
@@ -91,6 +94,7 @@ class JSONStorage(abc.ABC):
 		if not os.path.exists(path):
 			if error_on_missing:
 				raise FileNotFoundError(f'Cannot find storage file: "{path}"')
+			log_warn('Cannot find storage file: "{}"'.format(path))
 			self.save(path=path)
 			return
 		data: dict
@@ -98,8 +102,10 @@ class JSONStorage(abc.ABC):
 			with open(path, 'r') as fd:
 				data = json.load(fd)
 		except json.decoder.JSONDecodeError as e:
+			log_warn('Decode "{0}" error: {1}'.format(path, e))
 			self.save(path=path)
 		else:
+			log_info('Successful load file "{}"'.format(path))
 			self.update(data)
 
 	def on_saved(self):
@@ -142,10 +148,16 @@ class Config(JSONStorage):
 	def has_permission(self, src: MCDR.CommandSource, literal: str):
 		return src.has_permission(self.get_permission(literal))
 
+	def get_permission_hint(self) -> MCDR.RText:
+		return MCDR.RText(tr('permission.denied', cls.msg_id.to_plain_text()), color=MCDR.RColor.red)
+
+	@property
+	def permission_hint(self) -> MCDR.RText:
+		return self.get_permission_hint()
+
 	def literal(self, literal: str):
 		cls = self.__class__
-		return MCDR.Literal(literal).requires(lambda src: self.has_permission(src, literal),
-			lambda: MCDR.RText(tr('permission.denied', cls.msg_id.to_plain_text()), color=MCDR.RColor.red))
+		return MCDR.Literal(literal).requires(lambda src: self.has_permission(src, literal), self.get_permission_hint)
 
 class Properties:
 	def __init__(self, file: str):
