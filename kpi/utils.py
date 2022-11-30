@@ -132,7 +132,6 @@ class LazyData:
 		if key.startswith('_LazyData__'):
 			return super().__getattribute__(key)
 		assert self.__issetted, 'Data was not initialized yet'
-		print('getted:', key, getattr(self.__data, key))
 		return getattr(self.__data, key)
 
 	def __setattr__(self, key: str, val):
