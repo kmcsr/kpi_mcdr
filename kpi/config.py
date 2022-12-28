@@ -10,43 +10,107 @@ import mcdreforged.api.all as MCDR
 from .utils import *
 
 __all__ = [
-	'Config', 'JSONStorage',
+	'JSONObject', 'JSONStorage', 'Config',
 ]
 
 def tr(key: str, *args, **kwargs):
 	return MCDR.ServerInterface.get_instance().rtr(f'kpi.{key}', *args, **kwargs)
 
-class JSONStorage(abc.ABC):
+class JSONObject: pass
+
+_BASIC_CLASSES = (type(None), bool, int, float, str, list, dict)
+
+class JSONObject(abc.ABC):
 	__fields: dict
 
-	def __init__(self, plugin: MCDR.PluginServerInterface,
-		file_name: str = 'config.json', *, in_data_folder: bool = True,
-		sync_update: bool = False, load_after_init: bool = False,
-		kwargs: dict = None):
-		assert isinstance(plugin, MCDR.PluginServerInterface)
-		self.__plugin_server = plugin
-		self._file_name = file_name
-		self._in_data_folder = in_data_folder
-		self._sync_update = sync_update
-		vars(self).update((k, getattr(self.__class__, k)) for k in self.get_fields().keys())
+	def __init__(self, **kwargs: dict):
+		vars(self).update((k,
+			getattr(self.__class__, k) if self.get_fields()[k] in _BASIC_CLASSES else (getattr(self.__class__, k).clone()))
+		for k in self.get_fields().keys())
 		if kwargs is not None:
 			for k in kwargs.keys():
 				if k not in self.get_fields():
 					raise KeyError('Unknown init key received in __init__ of class {0}: {1}'.format(self.__class__, k))
 			vars(self).update(kwargs)
-		if load_after_init:
-			self.load()
+		self._update_hooks = set()
 
 	def __init_subclass__(cls):
 		fields = {}
 		for name, typ in get_type_hints(cls).items():
 			if not name.startswith('_'):
-				fields[name] = typ
+				val = getattr(cls, name)
+				fields[name] = type(val)
 		cls.__fields = fields
 
 	@classmethod
 	def get_fields(cls):
 		return cls.__fields
+
+	def clone(self) -> JSONObject:
+		cls = self.__class__
+		o = cls()
+		for k, t in cls.__fields.items():
+			v = getattr(self, k)
+			if issubclass(t, (dict, list)):
+				v = copy.deepcopy(v)
+			elif issubclass(t, JSONObject):
+				v = v.clone()
+			setattr(o, k, v)
+		return o
+
+	def serialize(self) -> dict:
+		cls = self.__class__
+		obj = {}
+		for k, v in vars(self).items():
+			if k in cls.__fields and not k.startswith('_'):
+				if isinstance(v, JSONObject):
+					v = v.serialize()
+				else:
+					v = copy.deepcopy(v)
+				obj[k] = v
+		return obj
+
+	def __on_update(self):
+		for u in self._update_hooks:
+			u()
+
+	def update(self, data: dict):
+		vself = vars(self)
+		for k, v in data.items():
+			t = self.__class__.__fields.get(k, None)
+			if t is not None:
+				if issubclass(t, JSONObject):
+					kv = v
+					v = t()
+					v.update(kv)
+					v._update_hooks.add(self.__on_update)
+				else:
+					assert isinstance(v, t), \
+						f'Data type not match, need {str(t)}, got {str(type(v))}'
+				vself[k] = v
+
+	def __setattr__(self, name: str, val):
+		typ = self.__class__.__fields.get(name, None)
+		if typ is not None:
+			assert isinstance(val, typ)
+		super().__setattr__(name, val)
+		if typ is not None:
+			self.__on_update()
+
+class JSONStorage(JSONObject):
+	def __init__(self, plugin: MCDR.PluginServerInterface,
+		file_name: str = 'config.json', *, in_data_folder: bool = True,
+		sync_update: bool = False, load_after_init: bool = False,
+		kwargs: dict = None):
+		assert isinstance(plugin, MCDR.PluginServerInterface)
+		super().__init__(**(kwargs if kwargs is not None else {}))
+		self.__plugin_server = plugin
+		self._file_name = file_name
+		self._in_data_folder = in_data_folder
+		self._sync_update = sync_update
+		self._update_hooks = {self.__on_update}
+		if load_after_init:
+			self.load()
 
 	@property
 	def plugin(self):
@@ -72,21 +136,16 @@ class JSONStorage(abc.ABC):
 	def sync_update(self, val: bool):
 		self._sync_update = val
 
-	def serialize(self) -> dict:
-		return copy.deepcopy(dict(filter(lambda o: not o[0].startswith('_'), vars(self).items())))
-
-	def update(self, data: dict):
-		vself = vars(self)
-		for k, v in data.items():
-			if k in vself:
-				vself[k] = v
-
 	def save(self, *, path: str = None):
 		if path is None:
 			path = self.default_path
 		with open(path, 'w') as fd:
 			json.dump(self.serialize(), fd, indent=4, ensure_ascii=False)
 		self.on_saved()
+
+	def __on_update(self):
+		if self._sync_update:
+			self.save()
 
 	def load(self, *, path: str = None, error_on_missing: bool = False):
 		if path is None:
@@ -113,14 +172,6 @@ class JSONStorage(abc.ABC):
 
 	def on_loaded(self):
 		pass
-
-	def __setattr__(self, name: str, val):
-		typ = self.__class__.__fields.get(name, None)
-		if typ is not None:
-			assert isinstance(val, typ)
-		super().__setattr__(name, val)
-		if typ is not None and self._sync_update:
-			self.save()
 
 class Config(JSONStorage):
 	def __init_subclass__(cls, msg_id, def_level: int = 4, **kwargs):
