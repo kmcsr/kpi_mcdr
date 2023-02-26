@@ -4,3 +4,6 @@
 
 # output
 /output/
+
+# python
+__pycache__
