@@ -1,5 +1,9 @@
 
 import abc
+import inspect
+import typing
+import types
+from enum import Enum
 
 import mcdreforged.api.all as MCDR
 
@@ -9,6 +13,7 @@ from .config import tr
 __all__ = [
 	'CommandSet', 'PermCommandSet',
 	'Node', 'Literal',
+	'Enumeration', 'Integer', 'Float', 'Text', 'QuotableText', 'GreedyText', 'Boolean',
 ]
 
 class AbstractNode(abc.ABC):
@@ -19,7 +24,12 @@ class AbstractNode(abc.ABC):
 class CommandSet(AbstractNode):
 	def __init_subclass__(cls, **kwargs):
 		super().__init_subclass__(**kwargs)
-		cls._nodes = [n for n in vars(cls).values() if isinstance(n, (Node, CommandSet))]
+		cls._nodes = []
+		for n in vars(cls).values():
+			if isinstance(n, Node):
+				cls._nodes.append(n)
+			elif issubtype(n, CommandSet):
+				cls._nodes.append(n())
 		cls.instance = None
 
 	def __new__(cls, *args, **kwargs):
@@ -27,11 +37,19 @@ class CommandSet(AbstractNode):
 		cls.instance = super().__new__(cls)
 		return cls.instance
 
-	def __init__(self, node: MCDR.AbstractNode, /, permission=None, permission_hint=None, *, default_help: bool = True):
+	def __init__(self, node: MCDR.AbstractNode = None, /, permission=None, permission_hint=None, *, default_help: bool = True):
+		cls = self.__class__
+		if node is None:
+			node = getattr(cls, 'Prefix', None)
 		if isinstance(node, str):
 			node = MCDR.Literal(node)
 		elif not isinstance(node, MCDR.AbstractNode):
 			raise TypeError('Node must be a AbstractNode or a string')
+		for n in cls._nodes:
+			n._owner = self
+			node.then(n.base)
+		self._node = node
+		self._help_node = None
 		if permission is not None:
 			permc = permission
 			permh = permission_hint
@@ -48,12 +66,6 @@ class CommandSet(AbstractNode):
 			elif not callable(permission):
 				raise TypeError('Unexpected permission hint type {}, expect callable, or int'.format(type(permission)))
 			node.requires(permission, permission_hint)
-		cls = self.__class__
-		for n in cls._nodes:
-			n._owner = self
-			node.then(n.base)
-		self._node = node
-		self._help_node = None
 		if cls.help is not CommandSet.help:
 			self._help_node = MCDR.Literal('help').runs(self.help)
 			self._node.then(self._help_node)
@@ -74,9 +86,17 @@ class CommandSet(AbstractNode):
 	def help_node(self) -> MCDR.AbstractNode:
 		return self._help_node
 
+	def requires(self, requirement, failure_message_getter):
+		self._node.requires(requirement, failure_message_getter)
+		return self
+
 	def register_to(self, server: MCDR.PluginServerInterface):
 		assert isinstance(server, MCDR.PluginServerInterface)
 		server.register_command(self._node)
+		helpmsg = getattr(self.__class__, 'HelpMessage', None)
+		if helpmsg is not None and isinstance(self.base, MCDR.Literal):
+			for l in self.base.literals:
+				server.register_help_message(l, helpmsg)
 
 	def default(self, source: MCDR.CommandSource):
 		raise NotImplementedError()
@@ -111,7 +131,55 @@ class Node(AbstractNode):
 			assert callable(fn)
 			self._fn = fn
 			if self.arg_wrapper is None:
-				self.node.runs(lambda src, ctx: dyn_call(self._fn, self._owner, src, ctx))
+				if args is None:
+					argspec = inspect.getfullargspec(self._fn)
+					hints = typing.get_type_hints(self._fn)
+					if not issubclass(hints[argspec.args[1]], MCDR.CommandSource):
+						raise TypeError('The first argument must be CommandSource')
+					namelist = []
+					# TODO: support default values
+					for name in argspec.args[2:]:
+						hint = hints[name]
+						typ = hint
+						ags = tuple()
+						if hasattr(hint, '__origin__'):
+							typ = hint.__origin__
+							ags = hint.__args__
+							if isinstance(ags[0], str):
+								name, ags = ags[0], ags[1:]
+						if name in namelist:
+							raise KeyError('Duplicate name "{}"'.format(name))
+						namelist.append(name)
+						n: MCDR.ArgumentNode = None
+						if issubclass(typ, Enum):
+							n = MCDR.Enumeration(name, typ)
+						elif issubclass(typ, int):
+							n = MCDR.Integer(name)
+							if len(ags) == 2:
+								n.at_max(ags[1])
+							if len(ags) > 0 and ags[0] is not None:
+								n.at_min(ags[0])
+						elif issubclass(typ, float):
+							n = MCDR.Float(name)
+							if len(ags) == 2:
+								n.at_max(ags[1])
+							if len(ags) > 0 and ags[0] is not None:
+								n.at_min(ags[0])
+						elif issubclass(typ, bool):
+							n = MCDR.Boolean(name)
+						elif issubclass(typ, QuotableText):
+							n = MCDR.QuotableText(name)
+						elif issubclass(typ, GreedyText):
+							n = MCDR.GreedyText(name)
+						elif issubclass(typ, (Text, str)):
+							n = MCDR.Text(name)
+						else:
+							raise TypeError('Unsupported type hint {}, {}'.format(hint, typ))
+						self._node.then(n)
+						self._node = n
+					self.node.runs(lambda src, ctx: self._fn(self._owner, src, *(ctx[n] for n in namelist)))
+				else:
+					self.node.runs(lambda src, ctx: dyn_call(self._fn, self._owner, src, ctx))
 			else:
 				self.node.runs(lambda src, ctx: self._fn(self._owner, *(dyn_call(self.arg_wrapper, src, ctx))) )
 			return self
@@ -160,7 +228,7 @@ class Literal(Node):
 		def wrapper(*args, **kwargs):
 			self = wrapper0(*args, **kwargs)
 			if isinstance(literal, str):
-				self._literals = [literal]
+				self._literals = (literal, )
 				self._literal = literal
 			else:
 				self._literals = tuple(literal)
@@ -190,3 +258,98 @@ class PermCommandSet(CommandSet, abc.ABC):
 
 	def get_perm_failure_message(self, src: MCDR.CommandSource, literal: str) -> str:
 		return MCDR.RText(tr('permission.denied0'), color=MCDR.RColor.red, styles=MCDR.RStyle.underlined)
+
+class Enumeration:
+	def __class_getitem__(cls, args):
+		if not isinstance(args, (list, tuple)):
+			args = (args, )
+		if len(args) > 1:
+			raise ValueError(
+				'Unexpected subscript argument, expect at most 2 but got {}'.format(len(args)))
+		i = 1 if isinstance(args[0], str) else 0
+		if not issubclass(args[i], Enum):
+			raise ValueError('Unexpected argument {}, expect an enum type'.format(args[i]))
+		return types.GenericAlias(args[i], args[:-1])
+
+class Integer(int):
+	def __class_getitem__(cls, args):
+		if not isinstance(args, (list, tuple)):
+			args = (args, )
+		if len(args) > 2:
+			raise ValueError(
+				'Unexpected subscript argument, expect at most 3 but got {}'.format(len(args)))
+		i = 1 if isinstance(args[0], str) else 0
+		if len(args) == i + 2:
+			if args[i] is not None and not isinstance(args[i], int):
+				raise TypeError('Unexpected type {} at 1st argument, expect int or None'.format(type(args[i])))
+			if not isinstance(args[i + 1], int):
+				raise TypeError('Unexpected type {} at 2nd argument, expect int'.format(type(args[i + 1])))
+			if args[i] is not None and args[i] > args[i + 1]:
+				raise ValueError('Maximum value must greather than minimum value')
+		elif not isinstance(args[i], int):
+			raise TypeError('Unexpected type {}, expect int'.format(type(args[i])))
+		return types.GenericAlias(cls, args)
+
+class Float(float):
+	def __class_getitem__(cls, args):
+		if not isinstance(args, (list, tuple)):
+			args = (args, )
+		if len(args) > 3:
+			raise ValueError(
+				'Unexpected subscript argument, expect at most 3 but got {}'.format(len(args)))
+		i = 1 if isinstance(args[0], str) else 0
+		if len(args) == i + 2:
+			if args[i] is not None and not isinstance(args[i], (float, int)):
+				raise TypeError('Unexpected type {} at 1st argument, expect float, int, or None'.format(type(args[i])))
+			if not isinstance(args[i + 1], (float, int)):
+				raise TypeError('Unexpected type {} at 2nd argument, expect float, or int'.format(type(args[i + 1])))
+			if args[i] is not None and args[i] > args[i + 1]:
+				raise ValueError('Maximum value must greather than minimum value')
+		elif not isinstance(args[i], (float, int)):
+			raise TypeError('Unexpected type {}, expect float or int'.format(type(args[i])))
+		return types.GenericAlias(cls, args)
+
+class Text(str):
+	def __class_getitem__(cls, args):
+		if not isinstance(args, (list, tuple)):
+			args = (args, )
+		if len(args) > 1:
+			raise ValueError(
+				'Unexpected subscript argument, expect at most 1 but got {}'.format(len(args)))
+		if not isinstance(args[0], str):
+			raise TypeError('Unexpected type {} for name, expect str'.format(type(args[i])))
+		return types.GenericAlias(cls, args)
+
+class QuotableText(str):
+	def __class_getitem__(cls, args):
+		if not isinstance(args, (list, tuple)):
+			args = (args, )
+		if len(args) > 1:
+			raise ValueError(
+				'Unexpected subscript argument, expect at most 1 but got {}'.format(len(args)))
+		if not isinstance(args[0], str):
+			raise TypeError('Unexpected type {} for name, expect str'.format(type(args[i])))
+		return types.GenericAlias(cls, args)
+
+class GreedyText(str):
+	def __class_getitem__(cls, args):
+		if not isinstance(args, (list, tuple)):
+			args = (args, )
+		if len(args) > 1:
+			raise ValueError(
+				'Unexpected subscript argument, expect at most 1 but got {}'.format(len(args)))
+		if not isinstance(args[0], str):
+			raise TypeError('Unexpected type {} for name, expect str'.format(type(args[i])))
+		return types.GenericAlias(cls, args)
+
+class Boolean:
+	def __class_getitem__(cls, args):
+		if not isinstance(args, (list, tuple)):
+			args = (args, )
+		if len(args) > 1:
+			raise ValueError(
+				'Unexpected subscript argument, expect at most 1 but got {}'.format(len(args)))
+		if not isinstance(args[0], str):
+			raise TypeError('Unexpected type {} for name, expect str'.format(type(args[i])))
+		return types.GenericAlias(bool, args)
+

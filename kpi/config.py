@@ -181,7 +181,7 @@ class JSONObject(abc.ABC):
 	def __getitem__(self, key: str):
 		if not isinstance(key, str):
 			raise KeyError('Key must be a string')
-		field = cls.get_fields().get(key, None)
+		field = self.__class__.get_fields().get(key, None)
 		if field is None:
 			raise KeyError()
 		return getattr(self, key, field[1])
@@ -302,8 +302,12 @@ class Config(JSONStorage):
 		return self.plugin
 
 	def get_permission(self, literal: str):
-		if isinstance(self.minimum_permission_level, dict):
-			return self.minimum_permission_level.get(literal, self.__class__.def_level)
+		if isinstance(self.minimum_permission_level, (dict, JSONObject)):
+			try:
+				return self.minimum_permission_level[literal]
+			except KeyError:
+				return self.__class__.def_level
+			
 		raise RuntimeError('Unknown type of "minimum_permission_level": {}'.format(str(type(self.minimum_permission_level))))
 
 	def has_permission(self, src: MCDR.CommandSource, literal: str):
