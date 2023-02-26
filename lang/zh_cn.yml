@@ -1,3 +1,8 @@
 kpi:
   permission:
     denied: '{0} 没有足够权限'
+    denied0: '没有足够权限'
+  command:
+    notimplemented: '指令未实现'
+    player_only: '只有玩家可以执行该指令'
+    console_only: '只有控制台可以执行该指令'

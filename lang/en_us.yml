@@ -1,3 +1,8 @@
 kpi:
   permission:
     denied: '{0} permission denied'
+    denied0: 'permission denied'
+  command:
+    notimplemented: 'Command not implemented'
+    player_only: 'Only player can execute this command'
+    console_only: 'Only console can execute this command'

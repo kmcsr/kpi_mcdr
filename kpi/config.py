@@ -3,7 +3,7 @@ import abc
 import copy
 import os
 import json
-from typing import get_type_hints, Dict
+from typing import get_type_hints, Dict, Any, Union
 
 import mcdreforged.api.all as MCDR
 
@@ -16,53 +16,124 @@ __all__ = [
 def tr(key: str, *args, **kwargs):
 	return MCDR.ServerInterface.get_instance().rtr(f'kpi.{key}', *args, **kwargs)
 
+def testInstance(ins, typ):
+	if typ is Any:
+		return True
+	if isinstance(typ, type): # if `typ` is origin type
+		return isinstance(ins, typ)
+	if hasattr(typ, '__origin__'): # if `typ` is typing type or subscript type
+		typ_origin = typ.__origin__
+		if typ_origin is Union:
+			return any(testInstance(ins, t) for t in typ_origin.__args__)
+		if isinstance(typ_origin, type):
+			if not isinstance(ins, typ_origin):
+				return False
+			if hasattr(typ, '__args__'):
+				typ_args = typ.__args__
+				if isinstance(typ_origin, list):
+					etyp = typ_args[0]
+					return all(testInstance(e, etyp) for e in ins)
+				if isinstance(typ_origin, tuple):
+					if len(typ_args) == 1:
+						etyp = typ_args[0]
+						return all(testInstance(e, etyp) for e in ins)
+					return all(testInstance(ins[i], t) for i, t in typ_args)
+				if isinstance(typ_origin, dict):
+					kt, vt = typ_args
+					return all(testInstance(k, kt) and testInstance(v, vt) for k, v in ins.items())
+			return True
+	return False
+
+class DictWrapper(dict):
+	def __init__(self, obj: dict):
+		super().__init__()
+		if not isinstance(obj, dict):
+			raise ValueError('obj is not a dict')
+		for k, v in obj.items():
+			self[k] = v
+
+	def __setitem__(self, key: str, val):
+		if not isinstance(key, str):
+			raise KeyError('Key must be a string')
+		super().__setitem__(key, val)
+
 class JSONObject: pass
 
-_BASIC_CLASSES = (type(None), bool, int, float, str, list, dict)
+_BASIC_CLASSES = (type(None), bool, int, float, str)
+_CONTAINER_TYPES = (list, dict)
+
+def serialize(obj):
+	cls = obj.__class__
+	if issubclass(cls, JSONObject):
+		fields = cls.get_fields()
+		res = {}
+		for k, v in vars(obj).items():
+			if k in fields:
+				if isinstance(v, JSONObject):
+					v = v.serialize()
+				else:
+					v = copy.deepcopy(v)
+				res[k] = v
+		return res
+	raise ValueError('Unknown serializable type {}'.format(type(obj)))
 
 class JSONObject(abc.ABC):
 	__fields: dict
 
 	def __init__(self, **kwargs: dict):
-		vars(self).update((k,
-			getattr(self.__class__, k) if self.get_fields()[k] in _BASIC_CLASSES else (getattr(self.__class__, k).clone()))
-		for k in self.get_fields().keys())
+		cls = self.__class__
+		fields = self.get_fields()
+		vself = vars(self)
+		for k, (t, v) in fields.items():
+			if t in _BASIC_CLASSES:
+				pass
+			elif t in _CONTAINER_TYPES:
+				v = copy.deepcopy(v)
+			elif isinstance(v, JSONObject):
+				v = v.copy()
+			vself[k] = v
 		if kwargs is not None:
-			for k in kwargs.keys():
-				if k not in self.get_fields():
+			for k, v in kwargs.items():
+				if k not in fields:
 					raise KeyError('Unknown init key received in __init__ of class {0}: {1}'.format(self.__class__, k))
-			vars(self).update(kwargs)
+				vself[k] = v
 		self._update_hooks = set()
 
 	def __init_subclass__(cls):
 		fields = {}
-		for name, typ in get_type_hints(cls).items():
+		hints = get_type_hints(cls)
+		for name, val in vars(cls).items():
 			if not name.startswith('_'):
-				val = getattr(cls, name)
-				fields[name] = type(val)
+				typ = hints.get(name, None)
+				if issubtype(val, JSONObject):
+					typ = val
+					val = typ()
+				if typ is not None:
+					fields[name] = (typ, val)
 		cls.__fields = fields
 
 	@classmethod
 	def get_fields(cls):
 		return cls.__fields
 
-	def clone(self) -> JSONObject:
+	def copy(self) -> JSONObject:
 		cls = self.__class__
 		o = cls()
-		for k, t in cls.__fields.items():
+		for k, t in cls.get_fields().items():
 			v = getattr(self, k)
-			if issubclass(t, (dict, list)):
+			if isinstance(v, (dict, list)):
 				v = copy.deepcopy(v)
-			elif issubclass(t, JSONObject):
-				v = v.clone()
+			elif isinstance(v, JSONObject):
+				v = v.copy()
 			setattr(o, k, v)
 		return o
 
 	def serialize(self) -> dict:
 		cls = self.__class__
+		fields = cls.get_fields()
 		obj = {}
 		for k, v in vars(self).items():
-			if k in cls.__fields and not k.startswith('_'):
+			if k in fields:
 				if isinstance(v, JSONObject):
 					v = v.serialize()
 				else:
@@ -75,27 +146,61 @@ class JSONObject(abc.ABC):
 			u()
 
 	def update(self, data: dict):
+		cls = self.__class__
+		fields = cls.get_fields()
 		vself = vars(self)
 		for k, v in data.items():
-			t = self.__class__.__fields.get(k, None)
-			if t is not None:
-				if issubclass(t, JSONObject):
+			f = fields.get(k, None)
+			if f is not None:
+				typ, _ = f
+				if issubtype(typ, JSONObject):
 					kv = v
-					v = t()
+					v = typ()
 					v.update(kv)
 					v._update_hooks.add(self.__on_update)
 				else:
-					assert isinstance(v, t), \
-						f'Data type not match, need {str(t)}, got {str(type(v))}'
+					if not testInstance(v, typ):
+						raise TypeError(
+							f'Data type not match, need {str(typ)}, got {str(type(v))}')
 				vself[k] = v
+			else:
+				pass # does it need raise KeyError() ?
 
 	def __setattr__(self, name: str, val):
-		typ = self.__class__.__fields.get(name, None)
-		if typ is not None:
-			assert isinstance(val, typ)
+		cls = self.__class__
+		field = cls.get_fields().get(name, None)
+		if field is not None:
+			assert isinstance(val, field[0])
+			old = getattr(self, name)
+			if val is old or val == old:
+				return
 		super().__setattr__(name, val)
-		if typ is not None:
+		if field is not None:
 			self.__on_update()
+
+	def __getitem__(self, key: str):
+		if not isinstance(key, str):
+			raise KeyError('Key must be a string')
+		field = cls.get_fields().get(key, None)
+		if field is None:
+			raise KeyError()
+		return getattr(self, key, field[1])
+
+	def __setitem__(self, key: str, val):
+		if not isinstance(key, str):
+			raise KeyError('Key must be a string')
+		typ, _ = cls.get_fields()[key]
+		if not isinstance(val, typ):
+			raise TypeError(
+				f'Unexpected type {str(type(val))} for key "{key}", expect {str(typ)}')
+		setattr(self, key, val)
+
+	def __iter__(self):
+		m = {}
+		for k in cls.get_fields().keys():
+			v = getattr(self, k)
+			m[k] = v
+		return iter(m)
 
 class JSONStorage(JSONObject):
 	def __init__(self, plugin: MCDR.PluginServerInterface,
@@ -111,6 +216,9 @@ class JSONStorage(JSONObject):
 		self._update_hooks = {self.__on_update}
 		if load_after_init:
 			self.load()
+
+	def copy(self) -> JSONObject:
+		raise RuntimeError('You cannot copy a storage')
 
 	@property
 	def plugin(self):
@@ -194,7 +302,9 @@ class Config(JSONStorage):
 		return self.plugin
 
 	def get_permission(self, literal: str):
-		return self.minimum_permission_level.get(literal, self.__class__.def_level)
+		if isinstance(self.minimum_permission_level, dict):
+			return self.minimum_permission_level.get(literal, self.__class__.def_level)
+		raise RuntimeError('Unknown type of "minimum_permission_level": {}'.format(str(type(self.minimum_permission_level))))
 
 	def has_permission(self, src: MCDR.CommandSource, literal: str):
 		return src.has_permission(self.get_permission(literal))
@@ -206,9 +316,12 @@ class Config(JSONStorage):
 	def permission_hint(self) -> MCDR.RText:
 		return self.get_permission_hint()
 
-	def literal(self, literal: str):
+	def require_permission(self, node: MCDR.AbstractNode, literal: str) -> MCDR.AbstractNode:
 		cls = self.__class__
-		return MCDR.Literal(literal).requires(lambda src: self.has_permission(src, literal), self.get_permission_hint)
+		return node.requires(lambda src: self.has_permission(src, literal), self.get_permission_hint)
+
+	def literal(self, literal: str):
+		return self.require_permission(MCDR.Literal(literal), literal)
 
 class Properties:
 	def __init__(self, file: str):
