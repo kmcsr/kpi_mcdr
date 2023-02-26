@@ -1,22 +1,44 @@
 
-import threading
 import functools
+import inspect
+import threading
+from types import  MethodType
 
 import mcdreforged.api.all as MCDR
 from mcdreforged.utils.logger import DebugOption
 
 __all__ = [
-	'export_pkg',
+	'export_pkg', 'dyn_call', 'issubtype',
 	'LockedData', 'LazyData', 'JobManager',
-	'new_timer', 'new_command', 'join_rtext', 'send_message', 'broadcast_message',
+	'new_timer',
+	'command_assert', 'assert_player', 'assert_console', 'require_player', 'require_console',
+	'new_command', 'join_rtext', 'send_message', 'broadcast_message',
 	'debug', 'log_info', 'log_warn', 'log_error'
 ]
+
 
 def export_pkg(globals_, pkg):
 	if hasattr(pkg, '__all__'):
 		globals_['__all__'].extend(pkg.__all__)
 		for n in pkg.__all__:
 			globals_[n] = getattr(pkg, n)
+
+def dyn_call(fn, *args):
+	sig = inspect.signature(fn)
+	argspec = inspect.getfullargspec(fn)
+	if argspec.varargs is None:
+		arg_len = len(argspec.args)
+		if isinstance(fn, MethodType):
+			arg_len -= 1
+		args = args[:arg_len]
+	try:
+		sig.bind(*args)
+	except TypeError:
+		raise
+	return fn(*args)
+
+def issubtype(typ, classes):
+	return isinstance(typ, type) and issubclass(typ, classes)
 
 def __lockeddata_proxy(method: str, expr: bool = False):
 	if expr:
@@ -239,6 +261,55 @@ def new_timer(interval, call, args: list = None, kwargs: dict = None, daemon: bo
 	tm.daemon = daemon
 	tm.start()
 	return tm
+
+def command_assert(asserter):
+	assert callable(asserter)
+	def wrapper(cb):
+		assert callable(cb)
+		def wrapped(source: MCDR.CommandSource, *args, **kwargs):
+			res = asserter(source, *args, **kwargs)
+			if res is not None and res is not True:
+				if res is False:
+					res = MCDR.RText('Command assert failed', color=MCDR.RColor.red)
+				# TODO: support i18n
+				if not isinstance(res, MCDR.RTextBase):
+					if isinstance(res, str):
+						res = MCDR.RText(res, color=MCDR.RColor.red, styles=MCDR.RStyle.underlined)
+					else:
+						res = MCDR.RText('Command assert failed: {}'.format(res), color=MCDR.RColor.red, styles=MCDR.RStyle.underlined)
+				send_message(source, res)
+				return None
+			return cb(source, *args, **kwargs)
+		return functools.wraps(cb)(wrapped)
+	return wrapper
+
+def assert_player(arg):
+	msg = MCDR.RText('Only player can execute this command', color=MCDR.RColor.red)
+	wrapper = command_assert(lambda source: msg if source.is_player else None)
+	if callable(arg):
+		return wrapper(arg)
+	# TODO: support i18n
+	if not isinstance(arg, (str, MCDR.RTextBase)):
+		raise TypeError('Assert message must be a string or a RTextBase')
+	msg = arg
+	return wrapper
+
+def assert_console(arg):
+	msg = MCDR.RText('Only console can execute this command', color=MCDR.RColor.red)
+	wrapper = command_assert(lambda source: msg if source.is_console else None)
+	if callable(arg):
+		return wrapper(arg)
+	# TODO: support i18n
+	if not isinstance(arg, (str, MCDR.RTextBase)):
+		raise TypeError('Assert message must be a string or a RTextBase')
+	msg = arg
+	return wrapper
+
+def require_player(node):
+	return node.requires(lambda src: src.is_player, lambda: MCDR.RText(tr('command.player_only'), color=MCDR.RColor.red))
+
+def require_console(node):
+	return node.requires(lambda src: src.is_console, lambda: MCDR.RText(tr('command.console_only'), color=MCDR.RColor.red))
 
 def new_command(cmd: str, text=None, *, action: MCDR.RAction = MCDR.RAction.suggest_command, **kwargs):
 	if text is None:
