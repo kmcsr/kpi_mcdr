@@ -16,6 +16,8 @@ __all__ = [
 	'debug', 'log_info', 'log_warn', 'log_error'
 ]
 
+def tr(key: str, *args, **kwargs):
+	return MCDR.ServerInterface.get_instance().rtr(f'kpi.{key}', *args, **kwargs)
 
 def export_pkg(globals_, pkg):
 	if hasattr(pkg, '__all__'):

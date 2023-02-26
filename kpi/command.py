@@ -1,16 +1,18 @@
 
 import abc
+import functools
 import inspect
-import typing
 import types
+import typing
 from enum import Enum
 
 import mcdreforged.api.all as MCDR
 
 from .utils import *
-from .config import tr
+from .utils import tr
 
 __all__ = [
+	'MiddleWare', 'Requires', 'player_only', 'console_only', 'require_permission',
 	'CommandSet', 'PermCommandSet',
 	'Node', 'Literal',
 	'Enumeration', 'Integer', 'Float', 'Text', 'QuotableText', 'GreedyText', 'Boolean',
@@ -20,6 +22,80 @@ class AbstractNode(abc.ABC):
 	@abc.abstractproperty
 	def base(self) -> MCDR.AbstractNode:
 		raise NotImplementedError()
+
+	@abc.abstractproperty
+	def node(self) -> MCDR.AbstractNode:
+		raise NotImplementedError()
+
+class MiddleWare(abc.ABC):
+	def __new__(cls, *args, **kwargs):
+		self = super().__new__(cls)
+		self.preinit(*args, **kwargs)
+		def wrapper(fn, /):
+			self._last = None
+			if isinstance(fn, MiddleWare):
+				self._last = fn
+				fn = self._last.fn
+			assert callable(fn)
+			self._fn = fn
+			return functools.wraps(fn)(self)
+		return wrapper
+
+	def preinit(self):
+		pass
+
+	@property
+	def fn(self):
+		return self._fn
+
+	@property
+	def last(self):
+		return self._last
+
+	def __call__(self, *args, **kwargs):
+		return self._fn(*args, **kwargs)
+
+	@abc.abstractmethod
+	def trigger(self, node: AbstractNode):
+		raise NotImplementedError()
+
+class Requires(MiddleWare):
+	def preinit(self, requirement, failure_message_getter, *, at_base: bool = False):
+		assert callable(requirement)
+		assert callable(failure_message_getter)
+		self.requirement = requirement
+		self.failure_message_getter = failure_message_getter
+		self._at_base = at_base
+
+	def trigger(self, node: AbstractNode):
+		(node.base if self._at_base else node.node).requires(self.requirement, self.failure_message_getter)
+
+def player_only(fn):
+	return Requires(lambda src: src.is_player, lambda: MCDR.RText(tr('command.player_only'), color=MCDR.RColor.red), at_base=True)(fn)
+
+def console_only(fn):
+	return Requires(lambda src: src.is_console, lambda: MCDR.RText(tr('command.console_only'), color=MCDR.RColor.red), at_base=True)(fn)
+
+def _wrap_permission(permission, permission_hint):
+	permc = permission
+	permh = permission_hint
+	if permission_hint is None:
+		permission_hint = lambda: MCDR.RText(tr('permission.denied0'), color=MCDR.RColor.red, styles=MCDR.RStyle.underlined)
+	elif isinstance(permission_hint, str):
+		permission_hint = lambda: MCDR.RText(permh, color=MCDR.RColor.red, styles=MCDR.RStyle.underlined)
+	elif isinstance(permission_hint, MCDR.RTextBase):
+		permission_hint = lambda: permh
+	elif not callable(permission_hint):
+		raise TypeError('Unexpected permission hint type {}, expect callable, str, or RTextBase'.format(type(permission_hint)))
+	if isinstance(permission, int):
+		permission = lambda src: src.has_permission(permc)
+	elif not callable(permission):
+		raise TypeError('Unexpected permission hint type {}, expect callable, or int'.format(type(permission)))
+	return permission, permission_hint
+
+def require_permission(permission, /, permission_hint=None):
+	permission, permission_hint = _wrap_permission(permission, permission_hint)
+	return Requires(permission, permission_hint, at_base=True)
 
 class CommandSet(AbstractNode):
 	def __init_subclass__(cls, **kwargs):
@@ -51,20 +127,7 @@ class CommandSet(AbstractNode):
 		self._node = node
 		self._help_node = None
 		if permission is not None:
-			permc = permission
-			permh = permission_hint
-			if permission_hint is None:
-				permission_hint = lambda: MCDR.RText(tr('permission.denied0'), color=MCDR.RColor.red, styles=MCDR.RStyle.underlined)
-			elif isinstance(permission_hint, str):
-				permission_hint = lambda: MCDR.RText(permh, color=MCDR.RColor.red, styles=MCDR.RStyle.underlined)
-			elif isinstance(permission_hint, MCDR.RTextBase):
-				permission_hint = lambda: permh
-			elif not callable(permission_hint):
-				raise TypeError('Unexpected permission hint type {}, expect callable, str, or RTextBase'.format(type(permission_hint)))
-			if isinstance(permission, int):
-				permission = lambda src: src.has_permission(permc)
-			elif not callable(permission):
-				raise TypeError('Unexpected permission hint type {}, expect callable, or int'.format(type(permission)))
+			permission, permission_hint = _wrap_permission(permission, permission_hint)
 			node.requires(permission, permission_hint)
 		if cls.help is not CommandSet.help:
 			self._help_node = MCDR.Literal('help').runs(self.help)
@@ -87,7 +150,7 @@ class CommandSet(AbstractNode):
 		return self._help_node
 
 	def requires(self, requirement, failure_message_getter):
-		self._node.requires(requirement, failure_message_getter)
+		self.node.requires(requirement, failure_message_getter)
 		return self
 
 	def register_to(self, server: MCDR.PluginServerInterface):
@@ -106,7 +169,8 @@ class CommandSet(AbstractNode):
 
 class Node(AbstractNode):
 	def __new__(cls, node: MCDR.AbstractNode, /, arg_wrapper=None, args: list = None, *,
-		player_only: bool = False, console_only: bool = False):
+		player_only: bool = False, console_only: bool = False,
+		requires: list[tuple] = None):
 		if not isinstance(node, MCDR.AbstractNode):
 			raise TypeError('Node must be an instance of AbstractNode')
 		if arg_wrapper is not None and not callable(arg_wrapper):
@@ -124,12 +188,15 @@ class Node(AbstractNode):
 		self._arg_wrapper = arg_wrapper
 		self._owner = None
 		if console_only:
-			self.require_console()
+			self.base.requires(lambda src: src.is_console, lambda: MCDR.RText(tr('command.console_only'), color=MCDR.RColor.red))
 		elif player_only:
-			self.require_player()
+			self.base.requires(lambda src: src.is_player, lambda: MCDR.RText(tr('command.player_only'), color=MCDR.RColor.red))
 		def wrapper(fn, /):
-			assert callable(fn)
-			self._fn = fn
+			if isinstance(fn, MiddleWare):
+				self._fn = fn.fn
+			else:
+				assert callable(fn)
+				self._fn = fn
 			if self.arg_wrapper is None:
 				if args is None:
 					argspec = inspect.getfullargspec(self._fn)
@@ -182,6 +249,14 @@ class Node(AbstractNode):
 					self.node.runs(lambda src, ctx: dyn_call(self._fn, self._owner, src, ctx))
 			else:
 				self.node.runs(lambda src, ctx: self._fn(self._owner, *(dyn_call(self.arg_wrapper, src, ctx))) )
+			if requires is not None:
+				for req, msg in requires:
+					self.node.requires(req, msg)
+			if isinstance(fn, MiddleWare):
+				mw = fn
+				while mw is not None:
+					mw.trigger(self)
+					mw = mw.last
 			return self
 		return wrapper
 
@@ -202,14 +277,8 @@ class Node(AbstractNode):
 		return self._owner
 
 	def requires(self, requirement, failure_message_getter):
-		self._base_node.requires(requirement, failure_message_getter)
+		self.node.requires(requirement, failure_message_getter)
 		return self
-
-	def require_player(self):
-		return self.requires(lambda src: src.is_player, lambda: MCDR.RText(tr('command.player_only'), color=MCDR.RColor.red))
-
-	def require_console(self):
-		return self.requires(lambda src: src.is_console, lambda: MCDR.RText(tr('command.console_only'), color=MCDR.RColor.red))
 
 	def __call__(self, *args, **kwargs):
 		return self._fn(*args, **kwargs)

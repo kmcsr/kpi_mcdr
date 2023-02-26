@@ -8,13 +8,11 @@ from typing import get_type_hints, Dict, Any, Union
 import mcdreforged.api.all as MCDR
 
 from .utils import *
+from .utils import tr
 
 __all__ = [
 	'JSONObject', 'JSONStorage', 'Config',
 ]
-
-def tr(key: str, *args, **kwargs):
-	return MCDR.ServerInterface.get_instance().rtr(f'kpi.{key}', *args, **kwargs)
 
 def testInstance(ins, typ):
 	if typ is Any:
