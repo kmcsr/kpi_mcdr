@@ -150,7 +150,8 @@ class CommandSet(AbstractNode):
 		cls.instance = None
 
 	def __new__(cls, *args, **kwargs):
-		assert cls.instance is None, 'You can only have one command set instance'
+		if cls.instance is not None:
+			raise RuntimeError('You can only have one command set instance')
 		cls.instance = super().__new__(cls)
 		return cls.instance
 
@@ -216,7 +217,7 @@ class CommandSet(AbstractNode):
 		return self._help_node
 
 	def register_to(self, server: MCDR.PluginServerInterface):
-		assert isinstance(server, MCDR.PluginServerInterface)
+		assert_instanceof(server, MCDR.PluginServerInterface)
 		server.register_command(self._node)
 		helpmsg = getattr(self.__class__, 'HelpMessage', None)
 		if helpmsg is not None and isinstance(self.base, MCDR.Literal):

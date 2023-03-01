@@ -133,7 +133,7 @@ class JSONSerializable(abc.ABC):
 			u()
 
 	def register(self, parent: JSONSerializable):
-		assert isinstance(parent, JSONSerializable)
+		assert_instanceof(parent, JSONSerializable)
 		self._update_hooks.add(parent.on_update)
 
 class DictWrapper(dict):
@@ -204,7 +204,7 @@ class JSONObject(JSONSerializable):
 		return obj
 
 	def update(self, data: dict):
-		assert isinstance(data, dict)
+		assert_instanceof(data, dict)
 		cls = self.__class__
 		fields = cls.get_fields()
 		vself = vars(self)
@@ -220,7 +220,7 @@ class JSONObject(JSONSerializable):
 		cls = self.__class__
 		field = cls.get_fields().get(name, None)
 		if field is not None:
-			assert isinstance(val, field[0])
+			assert_instanceof(val, field[0])
 			old = getattr(self, name)
 			if val is old or val == old:
 				return
@@ -257,7 +257,7 @@ class JSONStorage(JSONObject):
 		file_name: str = 'config.json', *, in_data_folder: bool = True,
 		sync_update: bool = False, load_after_init: bool = False,
 		kwargs: dict = None):
-		assert isinstance(plugin, MCDR.PluginServerInterface)
+		assert_instanceof(plugin, MCDR.PluginServerInterface)
 		super().__init__(**(kwargs if kwargs is not None else {}))
 		self.__plugin_server = plugin
 		self._file_name = file_name
@@ -343,7 +343,8 @@ class Config(JSONStorage):
 
 	@classmethod
 	def init_instance(cls, plugin: MCDR.PluginServerInterface, *args, sync_update: bool = True, **kwargs):
-		assert cls.instance is None
+		if cls.instance is not None:
+			raise RuntimeError('Cannot init instance twice')
 		cls.instance = cls(plugin, *args, sync_update=sync_update, **kwargs)
 		return cls.instance
 
@@ -360,7 +361,7 @@ class Config(JSONStorage):
 				return self.minimum_permission_level[literal]
 			except KeyError:
 				return self.__class__.def_level
-		raise RuntimeError('Unknown type of "minimum_permission_level": {}'.format(str(type(self.minimum_permission_level))))
+		raise TypeError('Unknown type of "minimum_permission_level": {}'.format(str(type(self.minimum_permission_level))))
 
 	def has_permission(self, src: MCDR.CommandSource, literal: str):
 		return src.has_permission(self.get_permission(literal))
@@ -558,6 +559,7 @@ def _escape_chr(c: str) -> str:
 
 def _encode_hex(n: int, xlen: int) -> str:
 	s = hex(n)[2:]
-	assert len(s) <= xlen
+	if len(s) > xlen:
+		raise ValueError('xlen to small')
 	s = s.rjust(xlen, '0')
 	return s

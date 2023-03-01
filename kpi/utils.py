@@ -243,7 +243,7 @@ class JobManager:
 
 	def prepare(self):
 		with self._l:
-			assert isinstance(self._l.d, list)
+			assert_instanceof(self._l.d, list)
 			self._l.d[1] += 1
 
 	def after(self):
