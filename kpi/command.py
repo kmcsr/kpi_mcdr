@@ -13,7 +13,7 @@ from .utils import tr
 
 __all__ = [
 	'MiddleWare', 'Requires', 'player_only', 'console_only', 'require_permission',
-	'CommandSet', 'PermCommandSet',
+	'CommandSet', 'PermCommandSet', 'call_with_root',
 	'Node', 'Literal',
 	'Enumeration', 'Integer', 'Float', 'Text', 'QuotableText', 'GreedyText', 'Boolean',
 ]
@@ -26,6 +26,10 @@ class AbstractNode(abc.ABC):
 	@abc.abstractproperty
 	def node(self) -> MCDR.AbstractNode:
 		raise NotImplementedError()
+
+	def requires(self, requirement, failure_message_getter):
+		self.node.requires(requirement, failure_message_getter)
+		return self
 
 class MiddleWare(abc.ABC):
 	def __new__(cls, *args, **kwargs):
@@ -45,7 +49,7 @@ class MiddleWare(abc.ABC):
 		pass
 
 	@property
-	def fn(self):
+	def origin(self):
 		return self._fn
 
 	@property
@@ -76,6 +80,39 @@ def player_only(fn):
 def console_only(fn):
 	return Requires(lambda src: src.is_console, lambda: MCDR.RText(tr('command.console_only'), color=MCDR.RColor.red), at_base=True)(fn)
 
+def call_with_root(fn):
+	"""
+	Call the method with root CommandSet instance
+
+	:param fn: the function need to wrap
+	:return: wrapped function, set the first argument `self` to `self.rootset`
+
+	Example::
+		class RootSet(CommandSet):
+			def __init__(self):
+				self.number = 123
+
+			@Literal("number")
+			class subset:
+				@call_with_root
+				def default(self, source: MCDR.CommandSource):
+					source.reply("The number is {}".format(self.number))
+
+				@Literal("add")
+				@call_with_root
+				def add(self, source: MCDR.CommandSource, n: int):
+					self.number += 1
+	"""
+	@functools.wraps(fn)
+	def wrapped(self, *args, **kwargs):
+		return fn(self.rootset, *args, **kwargs)
+	wrapped.origin = fn
+	return wrapped
+
+def _get_origin_fn(fn):
+	assert callable(fn)
+	return getattr(fn, 'origin', fn)
+
 def _wrap_permission(permission, permission_hint):
 	permc = permission
 	permh = permission_hint
@@ -97,12 +134,16 @@ def require_permission(permission, /, permission_hint=None):
 	permission, permission_hint = _wrap_permission(permission, permission_hint)
 	return Requires(permission, permission_hint, at_base=True)
 
+class CommandSet: pass
+
 class CommandSet(AbstractNode):
 	def __init_subclass__(cls, **kwargs):
 		super().__init_subclass__(**kwargs)
 		cls._nodes = []
 		for n in vars(cls).values():
-			if isinstance(n, Node):
+			if isinstance(n, (Node, CommandSet)):
+				cls._nodes.append(n)
+			elif isinstance(n, MiddleWare):
 				cls._nodes.append(n)
 			elif issubtype(n, CommandSet):
 				cls._nodes.append(n())
@@ -113,7 +154,9 @@ class CommandSet(AbstractNode):
 		cls.instance = super().__new__(cls)
 		return cls.instance
 
-	def __init__(self, node: MCDR.AbstractNode = None, /, permission=None, permission_hint=None, *, default_help: bool = True):
+	def __init__(self, node: MCDR.AbstractNode = None, /,
+		permission=None, permission_hint=None, *,
+		default_help: bool = True):
 		cls = self.__class__
 		if node is None:
 			node = getattr(cls, 'Prefix', None)
@@ -121,8 +164,20 @@ class CommandSet(AbstractNode):
 			node = MCDR.Literal(node)
 		elif not isinstance(node, MCDR.AbstractNode):
 			raise TypeError('Node must be a AbstractNode or a string')
+		self._parent = None
 		for n in cls._nodes:
-			n._owner = self
+			if isinstance(n, Node):
+				n._owner = self
+			elif isinstance(n, MiddleWare):
+				mw = n
+				while mw is not None:
+					mw.trigger(self)
+					mw = mw.last
+				n = n.origin()
+			elif isinstance(n, CommandSet):
+				n._parent = self
+			else:
+				raise TypeError('Unknown type of node {}'.format(type(n)))
 			node.then(n.base)
 		self._node = node
 		self._help_node = None
@@ -133,9 +188,20 @@ class CommandSet(AbstractNode):
 			self._help_node = MCDR.Literal('help').runs(self.help)
 			self._node.then(self._help_node)
 		if cls.default is not CommandSet.default:
-			self._node.runs(self.default)
+			self._node.runs(lambda src, ctx: dyn_call(cls.default, self, src, ctx, src=_get_origin_fn(cls.default)))
 		elif default_help and self._help_node is not None:
-			self._node.runs(self.help)
+			self._node.runs(lambda src, ctx: dyn_call(cls.help, self, src, ctx, src=_get_origin_fn(cls.help)))
+
+	@property
+	def parent(self) -> CommandSet:
+		return self._parent
+
+	@property
+	def rootset(self) -> CommandSet:
+		p = self
+		while p.parent is not None:
+			p = p.parent
+		return p
 
 	@property
 	def base(self) -> MCDR.AbstractNode:
@@ -148,10 +214,6 @@ class CommandSet(AbstractNode):
 	@property
 	def help_node(self) -> MCDR.AbstractNode:
 		return self._help_node
-
-	def requires(self, requirement, failure_message_getter):
-		self.node.requires(requirement, failure_message_getter)
-		return self
 
 	def register_to(self, server: MCDR.PluginServerInterface):
 		assert isinstance(server, MCDR.PluginServerInterface)
@@ -193,14 +255,16 @@ class Node(AbstractNode):
 			self.base.requires(lambda src: src.is_player, lambda: MCDR.RText(tr('command.player_only'), color=MCDR.RColor.red))
 		def wrapper(fn, /):
 			if isinstance(fn, MiddleWare):
-				self._fn = fn.fn
+				origin = fn.origin
+			elif issubtype(fn, CommandSet):
+				return fn(node)
 			else:
 				assert callable(fn)
-				self._fn = fn
+				origin = _get_origin_fn(fn)
 			if self.arg_wrapper is None:
 				if args is None:
-					argspec = inspect.getfullargspec(self._fn)
-					hints = typing.get_type_hints(self._fn)
+					argspec = inspect.getfullargspec(origin)
+					hints = typing.get_type_hints(origin)
 					if not issubclass(hints[argspec.args[1]], MCDR.CommandSource):
 						raise TypeError('The first argument must be CommandSource')
 					namelist = []
@@ -244,11 +308,11 @@ class Node(AbstractNode):
 							raise TypeError('Unsupported type hint {}, {}'.format(hint, typ))
 						self._node.then(n)
 						self._node = n
-					self.node.runs(lambda src, ctx: self._fn(self._owner, src, *(ctx[n] for n in namelist)))
+					self.node.runs(lambda src, ctx: fn(self.owner, src, *(ctx[n] for n in namelist)))
 				else:
-					self.node.runs(lambda src, ctx: dyn_call(self._fn, self._owner, src, ctx))
+					self.node.runs(lambda src, ctx: dyn_call(fn, self.owner, src, ctx, src=origin))
 			else:
-				self.node.runs(lambda src, ctx: self._fn(self._owner, *(dyn_call(self.arg_wrapper, src, ctx))) )
+				self.node.runs(lambda src, ctx: fn(self.owner, *(dyn_call(self.arg_wrapper, src, ctx))) )
 			if requires is not None:
 				for req, msg in requires:
 					self.node.requires(req, msg)
@@ -275,10 +339,6 @@ class Node(AbstractNode):
 	@property
 	def owner(self) -> CommandSet:
 		return self._owner
-
-	def requires(self, requirement, failure_message_getter):
-		self.node.requires(requirement, failure_message_getter)
-		return self
 
 	def __call__(self, *args, **kwargs):
 		return self._fn(*args, **kwargs)

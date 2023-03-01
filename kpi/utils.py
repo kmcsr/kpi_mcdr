@@ -8,7 +8,7 @@ import mcdreforged.api.all as MCDR
 from mcdreforged.utils.logger import DebugOption
 
 __all__ = [
-	'export_pkg', 'dyn_call', 'issubtype',
+	'export_pkg', 'dyn_call', 'issubtype', 'assert_instanceof',
 	'LockedData', 'LazyData', 'JobManager',
 	'new_timer',
 	'command_assert', 'assert_player', 'assert_console', 'require_player', 'require_console',
@@ -25,22 +25,33 @@ def export_pkg(globals_, pkg):
 		for n in pkg.__all__:
 			globals_[n] = getattr(pkg, n)
 
-def dyn_call(fn, *args):
-	sig = inspect.signature(fn)
-	argspec = inspect.getfullargspec(fn)
+def dyn_call(fn, *args, src=None, kwargs: dict = None):
+	if src is None:
+		src = fn
+	sig = inspect.signature(src)
+	argspec = inspect.getfullargspec(src)
 	if argspec.varargs is None:
 		arg_len = len(argspec.args)
-		if isinstance(fn, MethodType):
+		if isinstance(src, MethodType):
 			arg_len -= 1
 		args = args[:arg_len]
+	if kwargs is None:
+		kwargs = {}
 	try:
-		sig.bind(*args)
+		sig.bind(*args, **kwargs)
 	except TypeError:
 		raise
-	return fn(*args)
+	return fn(*args, **kwargs)
 
 def issubtype(typ, classes):
 	return isinstance(typ, type) and issubclass(typ, classes)
+
+def assert_instanceof(obj, types):
+	if not isinstance(obj, types):
+		if isinstance(types, (list, tuple)):
+			raise TypeError('Unexpected type {}, expect {}'.format(
+				type(obj), ' | '.join(str(t) for t in types)))
+		raise TypeError('Unexpected type {}, expect {}'.format(type(obj), str(types)))
 
 def __lockeddata_proxy(method: str, expr: bool = False):
 	if expr:

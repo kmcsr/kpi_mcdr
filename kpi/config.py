@@ -1,8 +1,10 @@
 
 import abc
 import copy
-import os
+import functools
 import json
+import os
+from enum import Enum
 from typing import get_type_hints, Dict, Any, Union
 
 import mcdreforged.api.all as MCDR
@@ -11,8 +13,11 @@ from .utils import *
 from .utils import tr
 
 __all__ = [
-	'JSONObject', 'JSONStorage', 'Config',
+	'memo_wrapper', 'serialize',
+	'JSONSerializable', 'DictWrapper', 'JSONObject', 'JSONStorage', 'Config',
 ]
+
+_UNION_TYPE = type(Union[int, str])
 
 def testInstance(ins, typ):
 	if typ is Any:
@@ -42,6 +47,95 @@ def testInstance(ins, typ):
 			return True
 	return False
 
+def memo_wrapper(fn):
+	@functools.wraps(fn)
+	def wrapped(obj, /, memo: dict = None):
+		if memo is None:
+			memo = {}
+		cache = memo.get(id(obj), None)
+		if cache is not None:
+			return cache
+		res = fn(obj, memo)
+		memo[id(obj)] = res
+		return res
+	return wrapped
+
+_BASIC_CLASSES = (type(None), bool, int, float, str)
+
+class JSONSerializable: pass
+class JSONObject: pass
+class JSONStorage: pass
+
+@memo_wrapper
+def serialize(obj, /, memo):
+	cls = obj.__class__
+	if cls in _BASIC_CLASSES:
+		return obj
+	if issubclass(cls, JSONSerializable):
+		return obj.serialize(memo)
+	if issubclass(cls, (list, tuple)):
+		return [serialize(v, memo) for v in obj]
+	if issubclass(cls, dict):
+		return dict((k, serialize(v, memo)) for k, v in obj.items())
+	raise ValueError('Unknown serializable type {}'.format(type(obj)))
+
+def deserialize(hint, obj):
+	if hint is None or hint is Any:
+		return copy.deepcopy(obj)
+	origin = getattr(hint, '__origin__', hint)
+	args = getattr(hint, '__args__', ())
+	if origin in _BASIC_CLASSES:
+		assert_instanceof(obj, origin)
+		return copy.deepcopy(obj)
+	if isinstance(hint, _UNION_TYPE):
+		for t in args:
+			try:
+				return deserialize(t, obj)
+			except (TypeError, ValueError) as e:
+				pass
+		raise TypeError('Unexpected data {}:{}, expect {}'.format(
+			type(obj), obj, ' | '.join(str(t) for t in args)))
+	if issubtype(origin, list):
+		assert_instanceof(obj, list)
+		elem = None if len(args) == 0 else args[0]
+		return [deserialize(elem, o) for o in obj]
+	if issubtype(origin, dict):
+		assert_instanceof(obj, dict)
+		kt, vt = (None, None) if len(args) == 0 else args
+		return dict((deserialize(kt, k), deserialize(vt, v)) for k, v in obj.items())
+	if issubtype(origin, Enum):
+		assert_instanceof(obj, str)
+		return origin[obj]
+	if issubtype(origin, JSONSerializable):
+		v = origin()
+		v.update(obj)
+		return v
+	raise TypeError('Unexpected hint {}'.format(hint))
+
+class JSONSerializable(abc.ABC):
+	def __init__(self):
+		self._update_hooks = set()
+
+	@abc.abstractmethod
+	def serialize(self, memo: dict) -> object:
+		raise NotImplementedError()
+
+	@abc.abstractmethod
+	def update(self, data: object):
+		raise NotImplementedError()
+
+	@abc.abstractmethod
+	def __deepcopy__(self, memo: dict):
+		raise NotImplementedError()
+
+	def on_update(self):
+		for u in self._update_hooks:
+			u()
+
+	def register(self, parent: JSONSerializable):
+		assert isinstance(parent, JSONSerializable)
+		self._update_hooks.add(parent.on_update)
+
 class DictWrapper(dict):
 	def __init__(self, obj: dict):
 		super().__init__()
@@ -55,47 +149,21 @@ class DictWrapper(dict):
 			raise KeyError('Key must be a string')
 		super().__setitem__(key, val)
 
-class JSONObject: pass
-
-_BASIC_CLASSES = (type(None), bool, int, float, str)
-_CONTAINER_TYPES = (list, dict)
-
-def serialize(obj):
-	cls = obj.__class__
-	if issubclass(cls, JSONObject):
-		fields = cls.get_fields()
-		res = {}
-		for k, v in vars(obj).items():
-			if k in fields:
-				if isinstance(v, JSONObject):
-					v = v.serialize()
-				else:
-					v = copy.deepcopy(v)
-				res[k] = v
-		return res
-	raise ValueError('Unknown serializable type {}'.format(type(obj)))
-
-class JSONObject(abc.ABC):
+class JSONObject(JSONSerializable):
 	__fields: dict
 
 	def __init__(self, **kwargs: dict):
+		super().__init__()
 		cls = self.__class__
 		fields = self.get_fields()
 		vself = vars(self)
 		for k, (t, v) in fields.items():
-			if t in _BASIC_CLASSES:
-				pass
-			elif t in _CONTAINER_TYPES:
-				v = copy.deepcopy(v)
-			elif isinstance(v, JSONObject):
-				v = v.copy()
-			vself[k] = v
+			vself[k] = copy.deepcopy(v)
 		if kwargs is not None:
 			for k, v in kwargs.items():
 				if k not in fields:
 					raise KeyError('Unknown init key received in __init__ of class {0}: {1}'.format(self.__class__, k))
 				vself[k] = v
-		self._update_hooks = set()
 
 	def __init_subclass__(cls):
 		fields = {}
@@ -103,7 +171,7 @@ class JSONObject(abc.ABC):
 		for name, val in vars(cls).items():
 			if not name.startswith('_'):
 				typ = hints.get(name, None)
-				if issubtype(val, JSONObject):
+				if issubtype(val, JSONSerializable):
 					typ = val
 					val = typ()
 				if typ is not None:
@@ -114,36 +182,29 @@ class JSONObject(abc.ABC):
 	def get_fields(cls):
 		return cls.__fields
 
-	def copy(self) -> JSONObject:
+	@memo_wrapper
+	def __deepcopy__(self, memo: dict) -> JSONObject:
 		cls = self.__class__
-		o = cls()
+		o = cls.__new__(cls)
 		for k, t in cls.get_fields().items():
 			v = getattr(self, k)
-			if isinstance(v, (dict, list)):
-				v = copy.deepcopy(v)
-			elif isinstance(v, JSONObject):
-				v = v.copy()
+			if isinstance(v, (dict, list, JSONSerializable)):
+				v = copy.deepcopy(v, memo)
 			setattr(o, k, v)
 		return o
 
-	def serialize(self) -> dict:
+	@memo_wrapper
+	def serialize(self, memo: dict) -> dict:
 		cls = self.__class__
 		fields = cls.get_fields()
 		obj = {}
 		for k, v in vars(self).items():
 			if k in fields:
-				if isinstance(v, JSONObject):
-					v = v.serialize()
-				else:
-					v = copy.deepcopy(v)
-				obj[k] = v
+				obj[k] = serialize(v, memo)
 		return obj
 
-	def __on_update(self):
-		for u in self._update_hooks:
-			u()
-
 	def update(self, data: dict):
+		assert isinstance(data, dict)
 		cls = self.__class__
 		fields = cls.get_fields()
 		vself = vars(self)
@@ -151,18 +212,9 @@ class JSONObject(abc.ABC):
 			f = fields.get(k, None)
 			if f is not None:
 				typ, _ = f
-				if issubtype(typ, JSONObject):
-					kv = v
-					v = typ()
-					v.update(kv)
-					v._update_hooks.add(self.__on_update)
-				else:
-					if not testInstance(v, typ):
-						raise TypeError(
-							f'Data type not match, need {str(typ)}, got {str(type(v))}')
-				vself[k] = v
-			else:
-				pass # does it need raise KeyError() ?
+				vself[k] = deserialize(typ, v)
+			elif False: # TODO: does it need raise KeyError() ?
+				raise KeyError('Unexpected field name "{}"'.format(k))
 
 	def __setattr__(self, name: str, val):
 		cls = self.__class__
@@ -174,7 +226,7 @@ class JSONObject(abc.ABC):
 				return
 		super().__setattr__(name, val)
 		if field is not None:
-			self.__on_update()
+			self.on_update()
 
 	def __getitem__(self, key: str):
 		if not isinstance(key, str):
@@ -211,11 +263,11 @@ class JSONStorage(JSONObject):
 		self._file_name = file_name
 		self._in_data_folder = in_data_folder
 		self._sync_update = sync_update
-		self._update_hooks = {self.__on_update}
 		if load_after_init:
 			self.load()
+		self._update_hooks.add(self.__on_update)
 
-	def copy(self) -> JSONObject:
+	def copy(self):
 		raise RuntimeError('You cannot copy a storage')
 
 	@property
@@ -241,6 +293,9 @@ class JSONStorage(JSONObject):
 	@sync_update.setter
 	def sync_update(self, val: bool):
 		self._sync_update = val
+
+	def __deepcopy__(self, memo: dict):
+		raise RuntimeError('Cannot copy JSONStorage')
 
 	def save(self, *, path: str = None):
 		if path is None:
@@ -305,7 +360,6 @@ class Config(JSONStorage):
 				return self.minimum_permission_level[literal]
 			except KeyError:
 				return self.__class__.def_level
-			
 		raise RuntimeError('Unknown type of "minimum_permission_level": {}'.format(str(type(self.minimum_permission_level))))
 
 	def has_permission(self, src: MCDR.CommandSource, literal: str):
