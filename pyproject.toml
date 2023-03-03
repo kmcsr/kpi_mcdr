@@ -1,0 +1,26 @@
+
+[tool.ruff]
+
+ignore = [
+	"F403",
+	# "F405",
+	"E701",
+]
+
+line-length = 100
+
+[tool.mypy]
+
+ignore_missing_imports = true
+
+[tool.poetry]
+
+name = "kpi"
+version = "0.0.0"
+description = "A common code share library for my MCDR plugin"
+authors = ["zyxkad <zyxkad@gmail.com>"]
+readme = "README.MD"
+
+[tool.poetry.dependencies]
+python = "^3.10"
+

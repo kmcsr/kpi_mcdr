@@ -1,0 +1,48 @@
+{
+  "folders":
+  [
+    {
+      "path": ".",
+    }
+  ],
+  "settings":
+  {
+    "translate_tabs_to_spaces": false,
+    "tab_size": 2,
+  },
+  "build_systems":
+  [
+    {
+      "name": "Publish",
+      "working_dir": "$project_path",
+      "cmd": ["bash", "./publisher.sh"],
+    },
+    {
+      "name": "Pack",
+      "working_dir": "$project_path",
+      "cmd": ["bash", "./publisher.sh", "-p"],
+    },
+    {
+      "name": "PackDev",
+      "working_dir": "$project_path",
+      "cmd": ["bash", "./publisher.sh", "-d"],
+    },
+    {
+      "name": "Release",
+      "working_dir": "$project_path",
+      "cmd": ["bash", "./publisher.sh", "-C"],
+    },
+    {
+      "name": "Typing check",
+      "working_dir": "$project_path",
+      "cmd": ["mypy", "--show-column-numbers", "./kpi"],
+      "file_regex": "^([^:]*):([^:]*):((?:[^:]+:)?) error: ([^\\n]+)",
+    },
+    {
+      "name": "Ruff check",
+      "working_dir": "$project_path",
+      "cmd": ["ruff", "check", "./kpi"],
+      "file_regex": "^([^:]*):([^:]*):([^:]*):([^\\n]+)",
+    },
+  ],
+}

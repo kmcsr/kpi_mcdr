@@ -8,7 +8,8 @@ import mcdreforged.api.all as MCDR
 from mcdreforged.utils.logger import DebugOption
 
 __all__ = [
-	'export_pkg', 'dyn_call', 'issubtype', 'assert_instanceof',
+	'get_server_instance',
+	'export_pkg', 'get_origin_func', 'dyn_call', 'issubtype', 'assert_instanceof',
 	'LockedData', 'LazyData', 'JobManager',
 	'new_timer',
 	'command_assert', 'assert_player', 'assert_console', 'require_player', 'require_console',
@@ -16,8 +17,13 @@ __all__ = [
 	'debug', 'log_info', 'log_warn', 'log_error'
 ]
 
+def get_server_instance():
+	server = MCDR.ServerInterface.get_instance()
+	assert server is not None
+	return server
+
 def tr(key: str, *args, **kwargs):
-	return MCDR.ServerInterface.get_instance().rtr(f'kpi.{key}', *args, **kwargs)
+	return get_server_instance().rtr(f'kpi.{key}', *args, **kwargs)
 
 def export_pkg(globals_, pkg):
 	if hasattr(pkg, '__all__'):
@@ -25,9 +31,14 @@ def export_pkg(globals_, pkg):
 		for n in pkg.__all__:
 			globals_[n] = getattr(pkg, n)
 
-def dyn_call(fn, *args, src=None, kwargs: dict = None):
+def get_origin_func(fn, /, stop_at=None):
+	while (stop_at is None or not stop_at(fn)) and hasattr(fn, '__wrapped__'):
+		fn = fn.__wrapped__
+	return fn
+
+def dyn_call(fn, *args, src=None, kwargs: dict | None = None):
 	if src is None:
-		src = fn
+		src = get_origin_func(fn)
 	sig = inspect.signature(src)
 	argspec = inspect.getfullargspec(src)
 	if argspec.varargs is None:
@@ -94,7 +105,7 @@ class LockedData:
 		self._lock = threading.RLock() if lock is None else lock
 
 	@property
-	def l(self):
+	def l(self): # noqa: E743
 		return self._lock
 
 	def __enter__(self):
@@ -179,10 +190,8 @@ class LazyData:
 		assert self.__issetted, 'Data was not initialized yet'
 		return delattr(self.__data, key)
 
-class JobManager: pass
-
 class Job:
-	def __init__(self, manager: JobManager, call, block: bool, name: str):
+	def __init__(self, manager: 'JobManager', call, block: bool, name: str):
 		self._manager = manager
 		self._call = call
 		self.block = block
@@ -196,7 +205,8 @@ class Job:
 		with self._manager._l:
 			if self._manager._l.d is not None and not self.block:
 				if len(args) > 0 and isinstance(args[0], MCDR.CommandSource):
-					send_message(args[0], MCDR.RText('In progress {} now'.format(self._manager._l.d[0]), color=MCDR.RColor.red))
+					send_message(args[0],
+						MCDR.RText('In progress {} now'.format(self._manager._l.d[0]), color=MCDR.RColor.red))
 				else:
 					log_warn('In progress {0} now, cannot do {1}'.format(self._manager._l.d[0], self.name))
 				return None
@@ -268,7 +278,8 @@ class JobManager:
 			return Job(self, call, block, name)
 		return w
 
-def new_timer(interval, call, args: list = None, kwargs: dict = None, daemon: bool = True, name: str = 'kpi_timer'):
+def new_timer(interval, call, args: list | None = None, kwargs: dict | None = None,
+	daemon: bool = True, name: str = 'kpi_timer'):
 	tm = threading.Timer(interval, call, args=args, kwargs=kwargs)
 	tm.name = name
 	tm.daemon = daemon
@@ -289,7 +300,8 @@ def command_assert(asserter):
 					if isinstance(res, str):
 						res = MCDR.RText(res, color=MCDR.RColor.red, styles=MCDR.RStyle.underlined)
 					else:
-						res = MCDR.RText('Command assert failed: {}'.format(res), color=MCDR.RColor.red, styles=MCDR.RStyle.underlined)
+						res = MCDR.RText('Command assert failed: {}'.format(res),
+							color=MCDR.RColor.red, styles=MCDR.RStyle.underlined)
 				send_message(source, res)
 				return None
 			return cb(source, *args, **kwargs)
@@ -319,12 +331,15 @@ def assert_console(arg):
 	return wrapper
 
 def require_player(node):
-	return node.requires(lambda src: src.is_player, lambda: MCDR.RText(tr('command.player_only'), color=MCDR.RColor.red))
+	return node.requires(lambda src: src.is_player,
+		lambda: MCDR.RText(tr('command.player_only'), color=MCDR.RColor.red))
 
 def require_console(node):
-	return node.requires(lambda src: src.is_console, lambda: MCDR.RText(tr('command.console_only'), color=MCDR.RColor.red))
+	return node.requires(lambda src: src.is_console,
+		lambda: MCDR.RText(tr('command.console_only'), color=MCDR.RColor.red))
 
-def new_command(cmd: str, text=None, *, action: MCDR.RAction = MCDR.RAction.suggest_command, **kwargs):
+def new_command(cmd: str, text=None, *,
+	action: MCDR.RAction = MCDR.RAction.suggest_command, **kwargs):
 	if text is None:
 		text = cmd
 	if 'color' not in kwargs:
@@ -352,16 +367,17 @@ def send_message(source: MCDR.CommandSource, *args, sep=' ', log=False):
 			source.get_server().logger.info(t)
 
 def broadcast_message(*args, sep=' '):
-	MCDR.ServerInterface.get_instance().broadcast(join_rtext(*args, sep=sep))
+	get_server_instance().broadcast(join_rtext(*args, sep=sep))
 
 def debug(*args, sep=' '):
-	MCDR.ServerInterface.get_instance().logger.debug(join_rtext(*args, sep=sep), option=DebugOption.PLUGIN)
+	get_server_instance().logger.debug(join_rtext(*args, sep=sep),
+		option=DebugOption.PLUGIN)
 
 def log_info(*args, sep=' '):
-	MCDR.ServerInterface.get_instance().logger.info(join_rtext(*args, sep=sep))
+	get_server_instance().logger.info(join_rtext(*args, sep=sep))
 
 def log_warn(*args, sep=' '):
-	MCDR.ServerInterface.get_instance().logger.warn(join_rtext(*args, sep=sep))
+	get_server_instance().logger.warn(join_rtext(*args, sep=sep))
 
 def log_error(*args, sep=' '):
-	MCDR.ServerInterface.get_instance().logger.error(join_rtext(*args, sep=sep))
+	get_server_instance().logger.error(join_rtext(*args, sep=sep))

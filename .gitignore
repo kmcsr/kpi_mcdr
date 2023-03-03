@@ -4,6 +4,11 @@
 
 # output
 /output/
+/dist/
 
 # python
 __pycache__
+.*_cache
+
+# workspace
+*.sublime-workspace

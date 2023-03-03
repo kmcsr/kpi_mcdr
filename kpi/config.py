@@ -5,7 +5,7 @@ import functools
 import json
 import os
 from enum import Enum
-from typing import get_type_hints, Dict, Any, Union
+from typing import get_type_hints, Any, Union, Optional, ClassVar, Self
 
 import mcdreforged.api.all as MCDR
 
@@ -49,7 +49,7 @@ def testInstance(ins, typ):
 
 def memo_wrapper(fn):
 	@functools.wraps(fn)
-	def wrapped(obj, /, memo: dict = None):
+	def wrapped(obj, /, memo: dict | None = None):
 		if memo is None:
 			memo = {}
 		cache = memo.get(id(obj), None)
@@ -61,10 +61,6 @@ def memo_wrapper(fn):
 	return wrapped
 
 _BASIC_CLASSES = (type(None), bool, int, float, str)
-
-class JSONSerializable: pass
-class JSONObject: pass
-class JSONStorage: pass
 
 @memo_wrapper
 def serialize(obj, /, memo):
@@ -91,7 +87,7 @@ def deserialize(hint, obj):
 		for t in args:
 			try:
 				return deserialize(t, obj)
-			except (TypeError, ValueError) as e:
+			except (TypeError, ValueError):
 				pass
 		raise TypeError('Unexpected data {}:{}, expect {}'.format(
 			type(obj), obj, ' | '.join(str(t) for t in args)))
@@ -117,11 +113,11 @@ class JSONSerializable(abc.ABC):
 		self._update_hooks = set()
 
 	@abc.abstractmethod
-	def serialize(self, memo: dict) -> object:
+	def serialize(self, memo: dict):
 		raise NotImplementedError()
 
 	@abc.abstractmethod
-	def update(self, data: object):
+	def update(self, data):
 		raise NotImplementedError()
 
 	@abc.abstractmethod
@@ -132,7 +128,7 @@ class JSONSerializable(abc.ABC):
 		for u in self._update_hooks:
 			u()
 
-	def register(self, parent: JSONSerializable):
+	def register(self, parent: 'JSONSerializable'):
 		assert_instanceof(parent, JSONSerializable)
 		self._update_hooks.add(parent.on_update)
 
@@ -155,22 +151,26 @@ class JSONObject(JSONSerializable):
 	def __init__(self, **kwargs: dict):
 		super().__init__()
 		cls = self.__class__
-		fields = self.get_fields()
+		fields = cls.get_fields()
 		vself = vars(self)
 		for k, (t, v) in fields.items():
 			vself[k] = copy.deepcopy(v)
 		if kwargs is not None:
 			for k, v in kwargs.items():
 				if k not in fields:
-					raise KeyError('Unknown init key received in __init__ of class {0}: {1}'.format(self.__class__, k))
+					raise KeyError('Unknown init key received in __init__ of class {0}: {1}'.
+						format(cls, k))
 				vself[k] = v
 
 	def __init_subclass__(cls):
 		fields = {}
-		hints = get_type_hints(cls)
+		# TODO: check typing.Annotated
+		hints = get_type_hints(cls, include_extras=True)
 		for name, val in vars(cls).items():
 			if not name.startswith('_'):
 				typ = hints.get(name, None)
+				if getattr(typ, '__origin__', None) is ClassVar:
+					continue
 				if issubtype(val, JSONSerializable):
 					typ = val
 					val = typ()
@@ -183,7 +183,7 @@ class JSONObject(JSONSerializable):
 		return cls.__fields
 
 	@memo_wrapper
-	def __deepcopy__(self, memo: dict) -> JSONObject:
+	def __deepcopy__(self, memo: dict) -> 'JSONObject':
 		cls = self.__class__
 		o = cls.__new__(cls)
 		for k, t in cls.get_fields().items():
@@ -239,7 +239,7 @@ class JSONObject(JSONSerializable):
 	def __setitem__(self, key: str, val):
 		if not isinstance(key, str):
 			raise KeyError('Key must be a string')
-		typ, _ = cls.get_fields()[key]
+		typ, _ = self.__class__.get_fields()[key]
 		if not isinstance(val, typ):
 			raise TypeError(
 				f'Unexpected type {str(type(val))} for key "{key}", expect {str(typ)}')
@@ -256,7 +256,7 @@ class JSONStorage(JSONObject):
 	def __init__(self, plugin: MCDR.PluginServerInterface,
 		file_name: str = 'config.json', *, in_data_folder: bool = True,
 		sync_update: bool = False, load_after_init: bool = False,
-		kwargs: dict = None):
+		kwargs: dict | None = None):
 		assert_instanceof(plugin, MCDR.PluginServerInterface)
 		super().__init__(**(kwargs if kwargs is not None else {}))
 		self.__plugin_server = plugin
@@ -284,7 +284,8 @@ class JSONStorage(JSONObject):
 
 	@property
 	def default_path(self):
-		return os.path.join(self.plugin.get_data_folder(), self.file_name) if self._in_data_folder else self.file_name
+		return os.path.join(self.plugin.get_data_folder(), self.file_name) \
+			if self._in_data_folder else self.file_name
 
 	@property
 	def sync_update(self):
@@ -297,7 +298,7 @@ class JSONStorage(JSONObject):
 	def __deepcopy__(self, memo: dict):
 		raise RuntimeError('Cannot copy JSONStorage')
 
-	def save(self, *, path: str = None):
+	def save(self, *, path: str | None = None):
 		if path is None:
 			path = self.default_path
 		with open(path, 'w') as fd:
@@ -308,7 +309,7 @@ class JSONStorage(JSONObject):
 		if self._sync_update:
 			self.save()
 
-	def load(self, *, path: str = None, error_on_missing: bool = False):
+	def load(self, *, path: str | None = None, error_on_missing: bool = False):
 		if path is None:
 			path = self.default_path
 		if not os.path.exists(path):
@@ -335,6 +336,13 @@ class JSONStorage(JSONObject):
 		pass
 
 class Config(JSONStorage):
+	msg_id: ClassVar[MCDR.RTextBase]
+	def_level: ClassVar[int]
+	instance: ClassVar[Optional[Self]]
+
+	# 0:guest 1:user 2:helper 3:admin 4:owner
+	minimum_permission_level: dict[str, int] = {}
+
 	def __init_subclass__(cls, msg_id, def_level: int = 4, **kwargs):
 		super().__init_subclass__(**kwargs)
 		cls.msg_id = msg_id
@@ -342,14 +350,12 @@ class Config(JSONStorage):
 		cls.instance = None
 
 	@classmethod
-	def init_instance(cls, plugin: MCDR.PluginServerInterface, *args, sync_update: bool = True, **kwargs):
+	def init_instance(cls, plugin: MCDR.PluginServerInterface, *args,
+		sync_update: bool = True, **kwargs):
 		if cls.instance is not None:
 			raise RuntimeError('Cannot init instance twice')
 		cls.instance = cls(plugin, *args, sync_update=sync_update, **kwargs)
 		return cls.instance
-
-	# 0:guest 1:user 2:helper 3:admin 4:owner
-	minimum_permission_level: Dict[str, int] = {}
 
 	@property
 	def server(self) -> MCDR.PluginServerInterface:
@@ -361,12 +367,14 @@ class Config(JSONStorage):
 				return self.minimum_permission_level[literal]
 			except KeyError:
 				return self.__class__.def_level
-		raise TypeError('Unknown type of "minimum_permission_level": {}'.format(str(type(self.minimum_permission_level))))
+		raise TypeError('Unknown type of "minimum_permission_level": {}'.
+			format(str(type(self.minimum_permission_level))))
 
 	def has_permission(self, src: MCDR.CommandSource, literal: str):
 		return src.has_permission(self.get_permission(literal))
 
 	def get_permission_hint(self) -> MCDR.RText:
+		cls = self.__class__
 		return MCDR.RText(tr('permission.denied', cls.msg_id.to_plain_text()), color=MCDR.RColor.red)
 
 	@property
@@ -374,7 +382,6 @@ class Config(JSONStorage):
 		return self.get_permission_hint()
 
 	def require_permission(self, node: MCDR.AbstractNode, literal: str) -> MCDR.AbstractNode:
-		cls = self.__class__
 		return node.requires(lambda src: self.has_permission(src, literal), self.get_permission_hint)
 
 	def literal(self, literal: str):
@@ -383,7 +390,7 @@ class Config(JSONStorage):
 class Properties:
 	def __init__(self, file: str):
 		self._file = file
-		self._data = {}
+		self._data: dict[str, Any] = {}
 		if os.path.exists(file):
 			self.parse()
 
@@ -408,7 +415,7 @@ class Properties:
 					unescape_string(v)
 				self._data[k] = v
 
-	def save(self, comment: str = None):
+	def save(self, comment: str | None = None):
 		with open(self._file, 'w', encoding='utf8') as fd:
 			if comment is not None:
 				fd.write(f'# {comment}\n')
