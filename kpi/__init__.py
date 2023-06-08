@@ -2,17 +2,19 @@
 import mcdreforged.api.all as MCDR
 
 from . import config
+from .config import *
 from . import utils
+from .utils import *
 from . import api
+from .api import *
 
 __all__ = [
 	'config', 'utils',
 ]
 
-utils.export_pkg(globals(), config)
-utils.export_pkg(globals(), utils)
-utils.export_pkg(globals(), api)
+__all__.extend(config.__all__)
+__all__.extend(utils.__all__)
+__all__.extend(api.__all__)
 
 def on_info(server: MCDR.ServerInterface, info: MCDR.Info):
-	pass
-	# api.on_info(server, info)
+	api.on_info(server, info)

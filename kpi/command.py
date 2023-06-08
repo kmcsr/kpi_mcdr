@@ -39,7 +39,7 @@ class MiddleWare(abc.ABC):
 			self._last = None
 			if isinstance(fn, MiddleWare):
 				self._last = fn
-				fn = self._last.fn
+				fn = self._last.__wrapped__
 			assert callable(fn)
 			self._fn = fn
 			return functools.wraps(fn)(self)
@@ -242,6 +242,8 @@ def _get_arg_generator(hint):
 		ags = ()
 	if issubclass(typ, Enum):
 		return lambda name: MCDR.Enumeration(name, typ)
+	if issubclass(typ, bool): # bool must be checked before int, since issubclass(bool, int) is True
+		return MCDR.Boolean
 	if issubclass(typ, int):
 		def g(name):
 			n = MCDR.Integer(name)
@@ -260,8 +262,6 @@ def _get_arg_generator(hint):
 				n.at_min(ags[0])
 			return n
 		return g
-	if issubclass(typ, bool):
-		return MCDR.Boolean
 	if issubclass(typ, QuotableText):
 		return MCDR.QuotableText
 	if issubclass(typ, GreedyText):
@@ -275,6 +275,7 @@ class Node(AbstractNode):
 	_arg_wrapper: typing.Callable
 	_owner: None | CommandSet
 	_entries: list[MCDR.AbstractNode]
+
 	def __new__(cls, node: MCDR.AbstractNode, /, arg_wrapper=None, args: list | None = None, *,
 		player_only: bool = False, console_only: bool = False,
 		requires: list[tuple] | None = None):
@@ -360,9 +361,14 @@ class Node(AbstractNode):
 					self.node.requires(req, msg)
 			if isinstance(fn, MiddleWare):
 				mw = fn
-				while mw is not None:
+				while True:
 					mw.trigger(self)
+					if mw.last is None:
+						self._fn = mw.__wrapped__
+						break
 					mw = mw.last
+			else:
+				self._fn = fn
 			return self
 		return wrapper
 

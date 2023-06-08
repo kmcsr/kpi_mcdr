@@ -312,22 +312,23 @@ class JSONStorage(JSONObject):
 	def load(self, *, path: str | None = None, error_on_missing: bool = False):
 		if path is None:
 			path = self.default_path
-		if not os.path.exists(path):
+		if os.path.exists(path):
+			data: dict
+			try:
+				with open(path, 'r') as fd:
+					data = json.load(fd)
+			except json.decoder.JSONDecodeError as e:
+				log_warn('Decode "{0}" error: {1}'.format(path, e))
+				self.save(path=path)
+			else:
+				log_info('Successful load file "{}"'.format(path))
+				self.update(data)
+		else:
 			if error_on_missing:
 				raise FileNotFoundError(f'Cannot find storage file: "{path}"')
 			log_warn('Cannot find storage file: "{}"'.format(path))
 			self.save(path=path)
-			return
-		data: dict
-		try:
-			with open(path, 'r') as fd:
-				data = json.load(fd)
-		except json.decoder.JSONDecodeError as e:
-			log_warn('Decode "{0}" error: {1}'.format(path, e))
-			self.save(path=path)
-		else:
-			log_info('Successful load file "{}"'.format(path))
-			self.update(data)
+		self.on_loaded()
 
 	def on_saved(self):
 		pass

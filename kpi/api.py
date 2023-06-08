@@ -1,5 +1,6 @@
 
 import re
+from typing import Callable
 
 import mcdreforged.api.all as MCDR
 from mcdreforged.plugin.plugin_event import MCDRPluginEvents
@@ -10,8 +11,16 @@ __all__ = [
 	'watch_info'
 ]
 
-def watch_info(server: MCDR.PluginServerInterface,
-	callback, filterc=None, *, once: bool = False, priority: int | None = None):
+listeners: list[Callable] = []
+
+def on_info(server: MCDR.ServerInterface, info: MCDR.Info):
+	global listeners
+	for l in listeners:
+		l(server, info)
+
+def watch_info(server: MCDR.PluginServerInterface, callback: Callable,
+	filterc: str | Callable | re.Pattern | None = None, *,
+	once: bool = False, priority: int | None = None):
 	assert callable(callback)
 	if filterc is not None and not callable(filterc):
 		assert_instanceof(filterc, (re.Pattern, str))
@@ -35,8 +44,12 @@ def watch_info(server: MCDR.PluginServerInterface,
 					return
 			if once:
 				flag = False
-			callback(server, info)
+			dyn_call(callback, server, info)
 
-	server.register_event_listener(MCDRPluginEvents.GENERAL_INFO, listener, priority)
+	global listeners
+	listeners.append(listener)
+
+	# for some reason, it cannot work after load
+	# server.register_event_listener(MCDRPluginEvents.GENERAL_INFO, listener, priority)
 
 	return canceler

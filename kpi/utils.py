@@ -1,8 +1,10 @@
 
+import enum
 import functools
 import inspect
 import threading
-from types import  MethodType
+from types import MethodType
+from typing import Any
 
 import mcdreforged.api.all as MCDR
 from mcdreforged.utils.logger import DebugOption
@@ -10,10 +12,11 @@ from mcdreforged.utils.logger import DebugOption
 __all__ = [
 	'get_server_instance',
 	'export_pkg', 'get_origin_func', 'dyn_call', 'issubtype', 'assert_instanceof',
-	'LockedData', 'LazyData', 'JobManager',
+	'LockedData', 'LazyData', 'JobManager', 'ChannelStatus', 'Channel',
 	'new_timer',
 	'command_assert', 'assert_player', 'assert_console', 'require_player', 'require_console',
-	'new_command', 'join_rtext', 'send_message', 'broadcast_message',
+	'new_command', 'new_link', 'new_copyable',
+	'join_rtext', 'send_message', 'broadcast_message',
 	'debug', 'log_info', 'log_warn', 'log_error'
 ]
 
@@ -278,6 +281,50 @@ class JobManager:
 			return Job(self, call, block, name)
 		return w
 
+class ChannelStatus(int, enum.Enum):
+	IDLE = 0
+	RECVING = 1
+	SENDING = 2
+
+class Channel:
+	def __init__(self, cond: threading.Condition | None = None):
+		self._cond = threading.Condition() if cond is None else cond
+		self._status = ChannelStatus.IDLE
+		self._value: Any = None
+
+	@property
+	def cond(self) -> threading.Condition:
+		return self._cond
+
+	@property
+	def status(self) -> ChannelStatus:
+		return self._status
+
+	def recv(self) -> Any:
+		with self.cond:
+			while self._status == ChannelStatus.RECVING:
+				self.cond.wait()
+			if self._status == ChannelStatus.SENDING:
+				self._status = ChannelStatus.IDLE
+				self.cond.notify_all()
+			else:
+				self._status = ChannelStatus.RECVING
+				self.cond.wait()
+			return self._value
+
+	def send(self, value: Any = None):
+		with self.cond:
+			while self._status == ChannelStatus.SENDING:
+				self.cond.wait()
+			if self._status == ChannelStatus.RECVING:
+				self._status = ChannelStatus.IDLE
+				self._value = value
+				self.cond.notify_all()
+			else:
+				self._status = ChannelStatus.SENDING
+				self.cond.wait()
+				self._value = value
+
 def new_timer(interval, call, args: list | None = None, kwargs: dict | None = None,
 	daemon: bool = True, name: str = 'kpi_timer'):
 	tm = threading.Timer(interval, call, args=args, kwargs=kwargs)
@@ -338,8 +385,8 @@ def require_console(node):
 	return node.requires(lambda src: src.is_console,
 		lambda: MCDR.RText(tr('command.console_only'), color=MCDR.RColor.red))
 
-def new_command(cmd: str, text=None, *,
-	action: MCDR.RAction = MCDR.RAction.suggest_command, **kwargs):
+def new_command(cmd: str, text: str | None = None, *,
+	action: MCDR.RAction = MCDR.RAction.suggest_command, **kwargs) -> MCDR.RText:
 	if text is None:
 		text = cmd
 	if 'color' not in kwargs:
@@ -350,34 +397,74 @@ def new_command(cmd: str, text=None, *,
 		kwargs['styles'] = MCDR.RStyle.underlined
 	elif kwargs['styles'] is None:
 		kwargs.pop('styles')
-	return MCDR.RText(text, **kwargs).c(action, cmd).h(cmd)
+	return MCDR.RText(text, **kwargs).c(action, cmd).h('Click to execute', cmd)
 
-def join_rtext(*args, sep=' '):
+def new_link(link: str, text: str, *,
+	action: MCDR.RAction = MCDR.RAction.open_url, **kwargs) -> MCDR.RText:
+	if 'color' not in kwargs:
+		kwargs['color'] = MCDR.RColor.dark_blue
+	elif kwargs['color'] is None:
+		kwargs.pop('color')
+	if 'styles' not in kwargs:
+		kwargs['styles'] = MCDR.RStyle.underlined
+	elif kwargs['styles'] is None:
+		kwargs.pop('styles')
+	return MCDR.RText(text, **kwargs).c(action, link).h(
+		'Click to open' if action is MCDR.RAction.open_url else '', link)
+
+def new_copyable(copyable: str, text: str | None = None, *,
+	action: MCDR.RAction = MCDR.RAction.copy_to_clipboard, **kwargs) -> MCDR.RText:
+	if text is None:
+		text = copyable
+	if 'color' not in kwargs:
+		kwargs['color'] = MCDR.RColor.gold
+	elif kwargs['color'] is None:
+		kwargs.pop('color')
+	if 'styles' not in kwargs:
+		kwargs['styles'] = MCDR.RStyle.underlined
+	elif kwargs['styles'] is None:
+		kwargs.pop('styles')
+	return MCDR.RText(text, **kwargs).c(action, text).h(
+		'Click to copy to clipboard' if action is MCDR.RAction.copy_to_clipboard else '', text)
+
+sepTypes = None | str | MCDR.RTextBase
+
+def join_rtext(*args, sep: sepTypes = ' ') -> MCDR.RTextList:
 	if len(args) == 0:
 		return MCDR.RTextList()
 	if len(args) == 1:
 		return MCDR.RTextList(args[0])
-	return MCDR.RTextList(args[0], *(MCDR.RTextList(sep, a) for a in args[1:]))
+	if sep is None:
+		return MCDR.RTextList(*args)
+	t = MCDR.RTextList(args[0])
+	for a in args[1:]:
+		t.append(sep, a)
+	return t
 
-def send_message(source: MCDR.CommandSource, *args, sep=' ', log=False):
+def send_message(source: MCDR.CommandSource, *args,
+	sep: sepTypes = ' ', log: bool = False):
 	if source is not None:
 		t = join_rtext(*args, sep=sep)
 		source.reply(t)
 		if log and source.is_player:
 			source.get_server().logger.info(t)
 
-def broadcast_message(*args, sep=' '):
-	get_server_instance().broadcast(join_rtext(*args, sep=sep))
+def broadcast_message(*args, sep: sepTypes = ' '):
+	server = get_server_instance()
+	if server.is_server_running():
+		server.broadcast(join_rtext(*args, sep=sep))
+	else:
+		log_info(*args, sep=sep)
 
-def debug(*args, sep=' '):
+def debug(*args, sep: sepTypes = ' '):
 	get_server_instance().logger.debug(join_rtext(*args, sep=sep),
 		option=DebugOption.PLUGIN)
 
-def log_info(*args, sep=' '):
+def log_info(*args, sep: sepTypes = ' '):
 	get_server_instance().logger.info(join_rtext(*args, sep=sep))
 
-def log_warn(*args, sep=' '):
+def log_warn(*args, sep: sepTypes = ' '):
 	get_server_instance().logger.warn(join_rtext(*args, sep=sep))
 
-def log_error(*args, sep=' '):
+def log_error(*args, sep: sepTypes = ' '):
 	get_server_instance().logger.error(join_rtext(*args, sep=sep))
