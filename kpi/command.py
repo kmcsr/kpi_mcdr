@@ -39,7 +39,7 @@ class MiddleWare(abc.ABC):
 			self._last = None
 			if isinstance(fn, MiddleWare):
 				self._last = fn
-				fn = self._last.__wrapped__
+				fn = fn.__wrapped__
 			assert callable(fn)
 			self._fn = fn
 			return functools.wraps(fn)(self)
@@ -48,6 +48,10 @@ class MiddleWare(abc.ABC):
 	@property
 	def __wrapped__(self):
 		return self._fn
+
+	@__wrapped__.setter
+	def __wrapped__(self, wrapped):
+		pass # no action
 
 	@property
 	def last(self):
