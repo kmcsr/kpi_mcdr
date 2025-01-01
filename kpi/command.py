@@ -4,7 +4,7 @@ import functools
 import inspect
 import types
 import typing
-from typing import Union, Optional
+from typing import Any, Union, Optional
 from enum import Enum
 
 import mcdreforged.api.all as MCDR
@@ -17,9 +17,8 @@ __all__ = [
 	'CommandSet', 'PermCommandSet', 'call_with_root',
 	'Node', 'Literal',
 	'Integer', 'Float', 'Text', 'QuotableText', 'GreedyText',
+	'Require',
 ]
-
-_UNION_TYPE = type(Union[int, str])
 
 class AbstractNode(abc.ABC):
 	@abc.abstractproperty
@@ -323,30 +322,35 @@ class Node(AbstractNode):
 					defs = () if argspec.defaults is None else argspec.defaults
 					if len(defs) > len(args):
 						defs = defs[len(defs) - len(args):]
-					nodes = [self.node]
+					nodes = [([], self.node)]
 					for i, name in enumerate(args):
 						hint = hints[name]
-						ags = tuple()
-						# TODO: support union type
 						if name in namelist:
 							raise KeyError('Duplicate name "{}"'.format(name))
 						namelist.append(name)
 						if len(defs) + i >= len(args): # have default value
-							for n in nodes:
+							for _, n in nodes:
 								n.runs(_defarg_wrapper(fn, self, namelist, defs, i))
 								self._entries.append(n)
-						if isinstance(hint, _UNION_TYPE):
+						r = Require.get_require(hint)
+						if r:
+							hint = hint.__origin__
+						if isinstance(hint, types.UnionType):
 							nodes0 = nodes.copy()
 							nodes.clear()
-							for t in ags:
-								g = _get_arg_generator(t)
-								for m in nodes0:
-									n = g(name)
-									m.then(n)
-									nodes.append(n)
+							for t in hint.__args__:
+								if t is None:
+									for _, n in nodes0:
+										nodes.append(n)
+								else:
+									g = _get_arg_generator(t)
+									for _, m in nodes0:
+										n = g(name)
+										m.then(n)
+										nodes.append(n)
 						else:
 							g = _get_arg_generator(hint)
-							for i, m in enumerate(nodes):
+							for i, (_, m) in enumerate(nodes):
 								n = g(name)
 								m.then(n)
 								nodes[i] = n
@@ -498,3 +502,21 @@ class QuotableText(str): pass
 
 class GreedyText(str): pass
 
+class Require:
+	def __class_getitem__(cls, args):
+		if not isinstance(args, (list, tuple)) or len(args) != 2:
+			raise ValueError('Unexpected number of subscript arguments, expect two')
+		name, typ = args
+		if not isinstance(name, str) or type(typ) is not type:
+			raise ValueError('Unexpected type of subscript arguments, expect [str, type]')
+		return types.GenericAlias(Optional[typ], (cls, name))
+
+	@classmethod
+	def get_require(cls, typ: Any) -> str | None:
+		if (not hasattr(typ, '__origin__') or not is_optional(typ.__origin__) or
+				not isinstance(typ.__args__, tuple) or len(typ.__args__) != 2 or typ.__args__[0] is not cls):
+			return None
+		return typ.__args__[1]
+
+def is_optional(typ: Any) -> bool:
+	return typ.__origin__ is Union and len(typ.__args__) == 2 and types.NoneType in typ.__args__

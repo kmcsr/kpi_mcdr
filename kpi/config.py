@@ -5,7 +5,7 @@ import functools
 import json
 import os
 from enum import Enum
-from typing import get_type_hints, Any, Union, Optional, ClassVar, Self
+from typing import get_type_hints, Any, Union, Optional, ClassVar, Type, Self
 
 import mcdreforged.api.all as MCDR
 
@@ -148,7 +148,7 @@ class DictWrapper(dict):
 class JSONObject(JSONSerializable):
 	__fields: dict
 
-	def __init__(self, **kwargs: dict):
+	def __init__(self, **kwargs):
 		super().__init__()
 		cls = self.__class__
 		fields = cls.get_fields()
@@ -339,7 +339,7 @@ class JSONStorage(JSONObject):
 class Config(JSONStorage):
 	msg_id: ClassVar[MCDR.RTextBase]
 	def_level: ClassVar[int]
-	instance: ClassVar[Optional[Self]]
+	instance: ClassVar[Optional['Config']]
 
 	# 0:guest 1:user 2:helper 3:admin 4:owner
 	minimum_permission_level: dict[str, int] = {}
