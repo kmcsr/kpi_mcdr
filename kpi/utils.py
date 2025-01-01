@@ -7,7 +7,7 @@ from types import MethodType
 from typing import Any
 
 import mcdreforged.api.all as MCDR
-from mcdreforged.utils.logger import DebugOption
+from mcdreforged.logging.debug_option import DebugOption
 
 __all__ = [
 	'get_server_instance',
