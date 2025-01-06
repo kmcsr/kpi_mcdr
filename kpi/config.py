@@ -337,7 +337,7 @@ class JSONStorage(JSONObject):
 		pass
 
 class Config: pass
-class Config(JSONStorage):
+class Config(JSONStorage): # type: ignore # ignore no-redef
 	msg_id: ClassVar[MCDR.RTextBase]
 	def_level: ClassVar[int]
 	instance: 'ClassVar[Optional[Config]]'
@@ -352,8 +352,8 @@ class Config(JSONStorage):
 		cls.instance = None
 
 	@classmethod
-	def init_instance(cls: Type[SelfConfig], plugin: MCDR.PluginServerInterface, *args,
-		sync_update: bool = True, **kwargs) -> SelfConfig:
+	def init_instance(cls, plugin: MCDR.PluginServerInterface, *args,
+		sync_update: bool = True, **kwargs) -> Self:
 		if cls.instance is not None:
 			raise RuntimeError('Cannot init instance twice')
 		cls.instance = cls(plugin, *args, sync_update=sync_update, **kwargs)
