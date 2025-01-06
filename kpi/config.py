@@ -336,10 +336,11 @@ class JSONStorage(JSONObject):
 	def on_loaded(self):
 		pass
 
+class Config: pass
 class Config(JSONStorage):
 	msg_id: ClassVar[MCDR.RTextBase]
 	def_level: ClassVar[int]
-	instance: ClassVar[Optional['Config']]
+	instance: 'ClassVar[Optional[Config]]'
 
 	# 0:guest 1:user 2:helper 3:admin 4:owner
 	minimum_permission_level: dict[str, int] = {}
@@ -351,8 +352,8 @@ class Config(JSONStorage):
 		cls.instance = None
 
 	@classmethod
-	def init_instance(cls, plugin: MCDR.PluginServerInterface, *args,
-		sync_update: bool = True, **kwargs):
+	def init_instance(cls: Type[SelfConfig], plugin: MCDR.PluginServerInterface, *args,
+		sync_update: bool = True, **kwargs) -> SelfConfig:
 		if cls.instance is not None:
 			raise RuntimeError('Cannot init instance twice')
 		cls.instance = cls(plugin, *args, sync_update=sync_update, **kwargs)
