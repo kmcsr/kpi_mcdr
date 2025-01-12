@@ -340,21 +340,21 @@ class Node(AbstractNode):
 							nodes.clear()
 							for t in hint.__args__:
 								if t is None:
-									for _, n in nodes0:
+									for n in nodes0:
 										nodes.append(n)
 								else:
 									g = _get_arg_generator(t)
-									for _, m in nodes0:
+									for l, m in nodes0:
 										n = g(name)
 										m.then(n)
-										nodes.append(n)
+										nodes.append((l, n))
 						else:
 							g = _get_arg_generator(hint)
-							for i, (_, m) in enumerate(nodes):
+							for i, (l, m) in enumerate(nodes):
 								n = g(name)
 								m.then(n)
-								nodes[i] = n
-					for n in nodes:
+								nodes[i] = (l, n)
+					for _, n in nodes:
 						if n not in self._entries:
 							n.runs(lambda src, ctx: fn(self.owner, src, *(ctx[n] for n in namelist)))
 							self._entries.append(n)
