@@ -457,7 +457,7 @@ def broadcast_message(*args, sep: sepTypes = ' '):
 		log_info(*args, sep=sep)
 
 def debug(*args, sep: sepTypes = ' '):
-	get_server_instance().logger.debug(join_rtext(*args, sep=sep),
+	get_server_instance().logger.mdebug(join_rtext(*args, sep=sep),
 		option=DebugOption.PLUGIN)
 
 def log_info(*args, sep: sepTypes = ' '):
