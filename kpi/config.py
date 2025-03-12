@@ -145,6 +145,8 @@ class DictWrapper(dict):
 			raise KeyError('Key must be a string')
 		super().__setitem__(key, val)
 
+DNE = object()
+
 class JSONObject(JSONSerializable):
 	__fields: dict
 
@@ -161,21 +163,39 @@ class JSONObject(JSONSerializable):
 					raise KeyError('Unknown init key received in __init__ of class {0}: {1}'.
 						format(cls, k))
 				vself[k] = v
+		for k in fields:
+			if vself[k] is DNE:
+				raise ValueError('Field {0}.{1} is not initialized'.format(cls, k))
 
 	def __init_subclass__(cls):
 		fields = {}
 		# TODO: check typing.Annotated
 		hints = get_type_hints(cls, include_extras=True)
-		for name, val in vars(cls).items():
-			if not name.startswith('_'):
-				typ = hints.get(name, None)
-				if getattr(typ, '__origin__', None) is ClassVar:
-					continue
-				if issubtype(val, JSONSerializable):
-					typ = val
-					val = typ()
-				if typ is not None:
-					fields[name] = (typ, val)
+		clsv = vars(cls)
+		for name, typ in hints.items():
+			if name.startswith('_'):
+				continue
+			if getattr(typ, '__origin__', None) is ClassVar:
+				continue
+			val = clsv.get(name, DNE)
+			if issubtype(val, JSONSerializable):
+				typ = val
+				val = typ()
+			fields[name] = (typ, val)
+		for name, val in clsv.items():
+			if name.startswith('_'):
+				continue
+			if name in fields:
+				continue
+			typ = hints.get(name, None)
+			if getattr(typ, '__origin__', None) is ClassVar:
+				continue
+			if issubtype(val, JSONSerializable):
+				typ = val
+				val = typ()
+			if typ is None:
+				continue
+			fields[name] = (typ, val)
 		cls.__fields = fields
 
 	@classmethod
@@ -210,11 +230,10 @@ class JSONObject(JSONSerializable):
 		vself = vars(self)
 		for k, v in data.items():
 			f = fields.get(k, None)
-			if f is not None:
-				typ, _ = f
-				vself[k] = deserialize(typ, v)
-			elif False: # TODO: does it need raise KeyError() ?
-				raise KeyError('Unexpected field name "{}"'.format(k))
+			if f is None:
+				continue
+			typ, _ = f
+			vself[k] = deserialize(typ, v)
 
 	def __setattr__(self, name: str, val):
 		cls = self.__class__
