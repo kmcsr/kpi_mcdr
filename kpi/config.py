@@ -223,7 +223,7 @@ class JSONObject(JSONSerializable):
 				try:
 					obj[k] = serialize(v, memo)
 				except ValueError as e:
-					raise ValueError('Cannot serialize field {k}: {e}'.format(k, e))
+					raise ValueError('Cannot serialize field {}: {}'.format(k, e))
 		return obj
 
 	def update(self, data: dict):
