@@ -220,7 +220,10 @@ class JSONObject(JSONSerializable):
 		obj = {}
 		for k, v in vars(self).items():
 			if k in fields:
-				obj[k] = serialize(v, memo)
+				try:
+					obj[k] = serialize(v, memo)
+				except ValueError as e:
+					raise ValueError('Cannot serialize field {k}: {e}'.format(k, e))
 		return obj
 
 	def update(self, data: dict):
