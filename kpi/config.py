@@ -156,7 +156,7 @@ class JSONObject(JSONSerializable):
 		fields = cls.get_fields()
 		vself = vars(self)
 		for k, (t, v) in fields.items():
-			vself[k] = copy.deepcopy(v)
+			vself[k] = DNE if v is DNE else copy.deepcopy(v)
 		if kwargs is not None:
 			for k, v in kwargs.items():
 				if k not in fields:
@@ -171,7 +171,7 @@ class JSONObject(JSONSerializable):
 		fields = {}
 		# TODO: check typing.Annotated
 		hints = get_type_hints(cls, include_extras=True)
-		clsv = vars(cls)
+		clsv = dict((k, getattr(cls, k)) for k in dir(cls) if not k.startswith('_'))
 		for name, typ in hints.items():
 			if name.startswith('_'):
 				continue
@@ -181,10 +181,10 @@ class JSONObject(JSONSerializable):
 			if issubtype(val, JSONSerializable):
 				typ = val
 				val = typ()
+			elif isinstance(val, (list, tuple)):
+				val = copy.deepcopy(val)
 			fields[name] = (typ, val)
 		for name, val in clsv.items():
-			if name.startswith('_'):
-				continue
 			if name in fields:
 				continue
 			typ = hints.get(name, None)
@@ -193,6 +193,8 @@ class JSONObject(JSONSerializable):
 			if issubtype(val, JSONSerializable):
 				typ = val
 				val = typ()
+			elif isinstance(val, (list, tuple)):
+				val = copy.deepcopy(val)
 			if typ is None:
 				continue
 			fields[name] = (typ, val)
