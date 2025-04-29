@@ -129,7 +129,7 @@ class LockedData[T]:
 
 	def copy(self) -> T:
 		with self._lock:
-			return self._data.copy()
+			return self._data.copy() # type: ignore
 
 def __lazydata_proxy(method: str):
 	def wrapper(self, *args):
