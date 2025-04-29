@@ -5,7 +5,7 @@ import functools
 import json
 import os
 from enum import Enum
-from typing import get_type_hints, Any, Union, Optional, ClassVar, Type, Self
+from typing import get_type_hints, overload, Any, Union, Optional, ClassVar, Type, Self
 
 import mcdreforged.api.all as MCDR
 
@@ -280,7 +280,7 @@ class JSONStorage(JSONObject):
 	def __init__(self, plugin: MCDR.PluginServerInterface,
 		file_name: str = 'config.json', *, in_data_folder: bool = True,
 		sync_update: bool = False, load_after_init: bool = False,
-		kwargs: dict | None = None):
+		kwargs: dict | None = None) -> None:
 		assert_instanceof(plugin, MCDR.PluginServerInterface)
 		super().__init__(**(kwargs if kwargs is not None else {}))
 		self.__plugin_server = plugin
@@ -291,49 +291,49 @@ class JSONStorage(JSONObject):
 			self.load()
 		self._update_hooks.add(self.__on_update)
 
-	def copy(self):
+	def copy(self) -> Self:
 		raise RuntimeError('You cannot copy a storage')
 
 	@property
-	def plugin(self):
+	def plugin(self) -> MCDR.PluginServerInterface:
 		return self.__plugin_server
 
 	@property
-	def file_name(self):
+	def file_name(self) -> str:
 		return self._file_name
 
 	@file_name.setter
-	def file_name(self, file_name):
+	def file_name(self, file_name: str):
 		self._file_name = file_name
 
 	@property
-	def default_path(self):
+	def default_path(self) -> str:
 		return os.path.join(self.plugin.get_data_folder(), self.file_name) \
 			if self._in_data_folder else self.file_name
 
 	@property
-	def sync_update(self):
+	def sync_update(self) -> bool:
 		return self._sync_update
 
 	@sync_update.setter
-	def sync_update(self, val: bool):
+	def sync_update(self, val: bool) -> None:
 		self._sync_update = val
 
 	def __deepcopy__(self, memo: dict):
 		raise RuntimeError('Cannot copy JSONStorage')
 
-	def save(self, *, path: str | None = None):
+	def save(self, *, path: str | None = None) -> None:
 		if path is None:
 			path = self.default_path
 		with open(path, 'w') as fd:
 			json.dump(self.serialize(), fd, indent=4, ensure_ascii=False)
 		self.on_saved()
 
-	def __on_update(self):
+	def __on_update(self) -> None:
 		if self._sync_update:
 			self.save()
 
-	def load(self, *, path: str | None = None, error_on_missing: bool = False):
+	def load(self, *, path: str | None = None, error_on_missing: bool = False) -> None:
 		if path is None:
 			path = self.default_path
 		if os.path.exists(path):
@@ -354,10 +354,10 @@ class JSONStorage(JSONObject):
 			self.save(path=path)
 		self.on_loaded()
 
-	def on_saved(self):
+	def on_saved(self) -> None:
 		pass
 
-	def on_loaded(self):
+	def on_loaded(self) -> None:
 		pass
 
 class Config(JSONStorage):
@@ -389,7 +389,7 @@ class Config(JSONStorage):
 	def server(self) -> MCDR.PluginServerInterface:
 		return self.plugin
 
-	def get_permission(self, literal: str):
+	def get_permission(self, literal: str) -> int:
 		if isinstance(self.minimum_permission_level, (dict, JSONObject)):
 			try:
 				return self.minimum_permission_level[literal]
@@ -398,7 +398,7 @@ class Config(JSONStorage):
 		raise TypeError('Unknown type of "minimum_permission_level": {}'.
 			format(str(type(self.minimum_permission_level))))
 
-	def has_permission(self, src: MCDR.CommandSource, literal: str):
+	def has_permission(self, src: MCDR.CommandSource, literal: str) -> bool:
 		return src.has_permission(self.get_permission(literal))
 
 	def get_permission_hint(self) -> MCDR.RText:
@@ -409,20 +409,22 @@ class Config(JSONStorage):
 	def permission_hint(self) -> MCDR.RText:
 		return self.get_permission_hint()
 
-	def require_permission(self, node: MCDR.AbstractNode, literal: str) -> MCDR.AbstractNode:
+	def require_permission[T: MCDR.AbstractNode](self, node: T, literal: str) -> T:
 		return node.requires(lambda src: self.has_permission(src, literal), self.get_permission_hint)
 
-	def literal(self, literal: str):
+	def literal(self, literal: str) -> MCDR.Literal:
 		return self.require_permission(MCDR.Literal(literal), literal)
 
 class Properties:
-	def __init__(self, file: str):
+	def __init__(self, file: str, comment: str = '') -> None:
 		self._file = file
 		self._data: dict[str, Any] = {}
+		self._comment = comment
+
 		if os.path.exists(file):
 			self.parse()
 
-	def parse(self):
+	def parse(self) -> None:
 		self._data.clear()
 		with open(self._file, 'r') as fd:
 			while True:
@@ -443,10 +445,13 @@ class Properties:
 					unescape_string(v)
 				self._data[k] = v
 
-	def save(self, comment: str | None = None):
+	def save(self, comment: str | None = None) -> None:
+		if comment is None:
+			comment = self._comment
 		with open(self._file, 'w', encoding='utf8') as fd:
-			if comment is not None:
-				fd.write(f'# {comment}\n')
+			if len(comment) > 0:
+				for l in comment.split('\n'):
+					fd.write(f'# {l}\n')
 			fd.writelines([
 				f'{k}={v}\n' for k, v in self._data.items()
 			])
@@ -474,7 +479,15 @@ class Properties:
 	def values(self):
 		return self._data.values()
 
-	def get(self, key: str, default=None) -> str:
+	@overload
+	def get(self, key: str, default: None = None) -> str | None:
+		...
+
+	@overload
+	def get[T](self, key: str, default: T) -> str | T:
+		...
+
+	def get(self, key: str, default=None):
 		if key not in self._data:
 			return default
 		v = self._data[key]
@@ -482,7 +495,7 @@ class Properties:
 			return default
 		return v
 
-	def set(self, key: str, value):
+	def set(self, key: str, value: Any) -> None:
 		if isinstance(value, bool):
 			self._data[key] = 'true' if value else 'false'
 		elif isinstance(value, str):

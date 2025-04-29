@@ -102,8 +102,8 @@ def __lockeddata_proxy_wrapper(exprs: list, methods: list):
 	'__delitem__', '__getitem__', '__setitem__',
 	'__len__', '__iter__',
 ])
-class LockedData:
-	def __init__(self, data, lock=None):
+class LockedData[T]:
+	def __init__(self, data: T, lock=None):
 		self._data = data
 		self._lock = threading.RLock() if lock is None else lock
 
@@ -115,19 +115,19 @@ class LockedData:
 		self._lock.__enter__()
 		return self
 
-	def __exit__(self, *args, **kwargs):
-		return self._lock.__exit__(*args, **kwargs)
+	def __exit__(self, *exc_info):
+		return self._lock.__exit__(*exc_info)
 
 	@property
-	def d(self):
+	def d(self) -> T:
 		return self._data
 
 	@d.setter
-	def d(self, data):
+	def d(self, data: T):
 		assert data is not self
 		self._data = data
 
-	def copy(self):
+	def copy(self) -> T:
 		with self._lock:
 			return self._data.copy()
 
@@ -427,9 +427,9 @@ def new_copyable(copyable: str, text: str | None = None, *,
 	return MCDR.RText(text, **kwargs).c(action, text).h(
 		'Click to copy to clipboard' if action is MCDR.RAction.copy_to_clipboard else '', text)
 
-sepTypes = None | str | MCDR.RTextBase
+type SepTypes = None | str | MCDR.RTextBase
 
-def join_rtext(*args, sep: sepTypes = ' ') -> MCDR.RTextList:
+def join_rtext(*args, sep: SepTypes = ' ') -> MCDR.RTextList:
 	if len(args) == 0:
 		return MCDR.RTextList()
 	if len(args) == 1:
@@ -442,29 +442,29 @@ def join_rtext(*args, sep: sepTypes = ' ') -> MCDR.RTextList:
 	return t
 
 def send_message(source: MCDR.CommandSource, *args,
-	sep: sepTypes = ' ', log: bool = False):
+	sep: SepTypes = ' ', log: bool = False):
 	if source is not None:
 		t = join_rtext(*args, sep=sep)
 		source.reply(t)
 		if log and source.is_player:
 			source.get_server().logger.info(t)
 
-def broadcast_message(*args, sep: sepTypes = ' '):
+def broadcast_message(*args, sep: SepTypes = ' '):
 	server = get_server_instance()
 	if server.is_server_running():
 		server.broadcast(join_rtext(*args, sep=sep))
 	else:
 		log_info(*args, sep=sep)
 
-def debug(*args, sep: sepTypes = ' '):
+def debug(*args, sep: SepTypes = ' '):
 	get_server_instance().logger.mdebug(join_rtext(*args, sep=sep),
 		option=DebugOption.PLUGIN)
 
-def log_info(*args, sep: sepTypes = ' '):
+def log_info(*args, sep: SepTypes = ' '):
 	get_server_instance().logger.info(join_rtext(*args, sep=sep))
 
-def log_warn(*args, sep: sepTypes = ' '):
+def log_warn(*args, sep: SepTypes = ' '):
 	get_server_instance().logger.warn(join_rtext(*args, sep=sep))
 
-def log_error(*args, sep: sepTypes = ' '):
+def log_error(*args, sep: SepTypes = ' '):
 	get_server_instance().logger.error(join_rtext(*args, sep=sep))
